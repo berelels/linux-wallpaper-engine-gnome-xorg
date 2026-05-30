@@ -25,7 +25,7 @@ This approach, combined with a GUI for monitor selection and wallpaper propertie
 
 ### Steam
 - **Wallpaper Engine** purchased and in your Steam library
-- Wallpaper Engine **installed via Steam with Proton** enabled — this downloads the `assets/` folder that the engine needs to render scenes
+- Wallpaper Engine **installed via Steam with Proton Experimental** enabled — this downloads the `assets/` folder that the engine needs to render scenes
 - At least one wallpaper subscribed on the **Steam Workshop**
 
 > ⚠️ Installing Wallpaper Engine with Proton is the most commonly missed step. Without it, the `assets/` folder does not exist and nothing will work.
