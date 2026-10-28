@@ -12,17 +12,32 @@ This project runs the renderer in window mode on each monitor's exact geometry, 
 
 ## Get started
 
+Download `Linux_Wallpaper_Engine-<version>-x86_64.AppImage` from the [latest release](https://github.com/berelels/linux-wallpaper-engine-gnome-xorg/releases/latest), then:
+
+```bash
+chmod +x Linux_Wallpaper_Engine-*-x86_64.AppImage
+./Linux_Wallpaper_Engine-*-x86_64.AppImage
+```
+
+On first run it asks to install for your user: it copies the app (about 1 GB) to `~/.local/share/wallpaper-engine-gnome` and adds it to your app menu and login. No sudo, no compiling. You can delete the AppImage afterwards; open it again to update or uninstall. `--check` checks your system without changing anything.
+
+Works with native or Flatpak Steam.
+
+### Build from source instead
+
 ```bash
 git clone https://github.com/berelels/linux-wallpaper-engine-gnome-xorg.git
 cd linux-wallpaper-engine-gnome-xorg
 ./run.sh
 ```
 
-Run `./run.sh --check` first to check your system without installing anything.
+Run `./run.sh --check` first to check your system without installing anything. This path installs packages with `apt`, uses Flatpak Steam and compiles the renderer, as described below. To build the AppImage yourself, run `appimage/build.sh` (it lists any missing build packages).
 
 Sign into Steam, install Wallpaper Engine (enable Proton if Steam asks), then select your Steam folder in the browser. Keep Steam running to browse and download Workshop wallpapers.
 
 ## What the installer does
+
+The AppImage installs steps 5 to 7 below for your user, with everything else already inside it (patched browser, renderer and its libraries, a private Python and the X11 tools). The renderer is built from the same pinned commit and patch.
 
 `run.sh` runs as your normal user and asks for your sudo password once. It:
 
@@ -53,7 +68,9 @@ Already installed? Close the browser using **Quit**, update your checkout, and r
 
 ## Uninstall
 
-Quit the browser from the tray menu, then remove the GNOME integration. This stops its helpers, restores your original background and removes its autostart and menu entries:
+AppImage install: run the AppImage with `--uninstall`. It stops the helpers, restores your original background and removes the app folder and its menu and autostart entries.
+
+`run.sh` install: quit the browser from the tray menu, then remove the GNOME integration. This stops its helpers, restores your original background and removes its autostart and menu entries:
 
 ```bash
 python3 ~/.local/share/wallpaper-engine-gnome/uninstall-browser-integration.py
@@ -76,4 +93,4 @@ This release integrates [AbduL's](https://github.com/AbduLz0) and [zadwen's](htt
 
 [Integration details](docs/INTEGRATION.md) · [Renderer patch](patches/README.md) · [Compatibility](COMPATIBILITY.md)
 
-Tested live on Zorin OS 18.1 / GNOME 46 / X11. A fresh end-to-end installation and reboot have not been retested for this release.
+Tested live on Zorin OS 18.1 / GNOME 46 / X11 with native Steam, including the AppImage install. The `run.sh` path with a fresh install and reboot has not been retested for this release.
