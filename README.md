@@ -1,144 +1,35 @@
-# Linux Wallpaper Engine — GNOME + X11
+# Linux Wallpaper Engine for GNOME
 
-Animated wallpapers from the Steam Workshop running natively on **GNOME Shell with X11** — including Zorin OS, Ubuntu, and any GNOME-based distro.
+Browse Steam Workshop wallpapers and use them on your Linux desktop, with support for multiple monitors and clickable desktop icons.
 
----
+**For Zorin 18 / Ubuntu 24.04, GNOME on X11, x86_64.** You need to own Wallpaper Engine and install it through Steam. Wallpaper compatibility varies; Wayland is not supported.
 
-## Why this exists
-
-The `linux-wallpaperengine` project can render Wallpaper Engine scenes on Linux, but on GNOME + X11 the standard `--screen-root` mode doesn't work. GNOME Shell renders its own background layer on top of the X11 root window, completely covering the wallpaper.
-
-This project solves that by running the engine in `--window` mode with explicit monitor geometry, then using `wmctrl` to pin those windows below all other windows with `below + sticky` flags — making them behave exactly like a real wallpaper.
-
-This approach, combined with a GUI for monitor selection and wallpaper properties, was developed and tested on **Zorin OS 17** (GNOME + X11) and is believed to be the first working solution for this specific combination.
-
----
-
-## Requirements
-
-### System
-- Linux with **X11** session (not Wayland)
-- **GNOME Shell** as desktop environment
-- Tested on: **Zorin OS 17**, Ubuntu 24.04
-
-> To check your session type: `echo $XDG_SESSION_TYPE` → must return `x11`
-
-### Steam
-- **Wallpaper Engine** purchased and in your Steam library
-- Wallpaper Engine **installed via Steam with Proton Experimental** enabled — this downloads the `assets/` folder that the engine needs to render scenes
-- At least one wallpaper subscribed on the **Steam Workshop**
-
-> ⚠️ Installing Wallpaper Engine with Proton is the most commonly missed step. Without it, the `assets/` folder does not exist and nothing will work.
-
-### linux-wallpaperengine
-The open-source backend that renders the wallpapers. You need to compile it from source:
-
-👉 https://github.com/Almamu/linux-wallpaperengine
-
-Follow the build instructions in that repository before proceeding.
-
-### System packages
-```bash
-sudo apt install zenity xrandr xdotool wmctrl python3
-```
-
----
-
-## Installation
+## Get started
 
 ```bash
-git clone https://github.com/berelels/linux-wallpaper-engine-gnome-xorg
-cd linux-wallpaper-engine-gnome
-chmod +x install.sh
-./install.sh
+git clone https://github.com/AbduLz0/linux-wallpaper-engine-gnome-xorg.git
+cd linux-wallpaper-engine-gnome-xorg
+./run.sh
 ```
 
-The installer will:
-- Check and install missing dependencies
-- Copy the script to `~/.local/bin/`
-- Create an entry in your app menu
-- Configure autostart for login
-- Launch the setup wizard
+Setup installs dependencies, downloads the browser, builds the patched renderer, and adds **Linux Wallpaper Engine** to your app menu. The first build takes time and needs internet, several GB of disk space, and your sudo password.
 
----
+Sign into Steam, install Wallpaper Engine (enable Proton if Steam asks), then select your Steam folder in the browser. Keep Steam running to browse and download Workshop wallpapers.
 
-## Usage
+## Everyday use
 
-Search for **"Change Animated Wallpaper"** in your app menu and launch it.
+- Choose a wallpaper and click **Apply** for your selected display.
+- Close with **X** to hide the browser while your wallpaper continues playing.
+- Open **Linux Wallpaper Engine** again to return to the same session, without duplicate wallpaper or audio.
+- Use the tray menu's **Quit** to exit, or **Stop** in the browser to stop a wallpaper.
+- Use **Wallpaper Position** to adjust framing and zoom for each monitor.
 
-### First run — Setup Wizard
-You will be asked to:
-1. Point to the `linux-wallpaperengine` binary
-2. Point to your Steam root folder (auto-detected if possible)
+Already installed? Close the browser using **Quit**, update your checkout, and rerun `./run.sh`. For a separately installed native browser, see [manual integration and session patch](docs/SESSION.md).
 
-This is saved to `~/.config/wallpaper-engine/config.sh` and won't be asked again.
+## Credits and details
 
-### Every run — 4 steps
-1. **Select monitors** — all connected monitors are listed with resolution and position, auto-detected via `xrandr`
-2. **Select wallpaper** — lists all wallpapers downloaded from the Workshop by name
-3. **Configure properties** — toggle boolean options specific to that wallpaper (mouse interaction, parallax, effects, etc.)
-4. **Apply** — wallpaper is applied immediately and saved for autostart on next login
+This release integrates [zadwen’s improvements](https://github.com/zadwen/linux-wallpaper-engine-gnome-xorg) with their commit history, building on [Gabriel Dias / berelels](https://github.com/berelels/linux-wallpaper-engine-gnome-xorg). The browser is by [jagrat7](https://github.com/jagrat7/linux-wallpaper-engine); the renderer is by [Almamu](https://github.com/Almamu/linux-wallpaperengine). Original licenses and attribution are retained.
 
-### Reconfigure paths
-```bash
-change-wallpaper.sh --setup
-```
+[Integration details](docs/INTEGRATION.md) · [Renderer patch](patches/README.md) · [Compatibility](COMPATIBILITY.md)
 
----
-
-## How it works (technical)
-
-### The GNOME compositor problem
-On GNOME + X11, the `--screen-root` flag draws on the X11 root window. However, GNOME Shell's compositor renders its own background layer on top, making the wallpaper invisible. This is why standard tutorials don't work on Zorin OS / Ubuntu GNOME.
-
-### The solution
-Instead of `--screen-root`, we use `--window` with explicit geometry in the format `XxYxWxH`. This creates a normal application window positioned and sized to exactly cover each monitor.
-
-After launch, `wmctrl` pins each window with:
-```
-below    → always behind all other windows
-sticky   → visible on all workspaces
-skip_taskbar + skip_pager → hidden from taskbar and overview
-```
-
-This makes the windows behave exactly like a real desktop wallpaper.
-
-### Multiple monitors
-The engine only accepts one `--window` per process. For multiple monitors, we launch one process per monitor with a 4-second delay between them. This prevents GPU context conflicts on AMD hardware (and likely on others as well).
-
-### Autostart
-Every time you apply a wallpaper, the script regenerates `~/.local/bin/start-wallpaper.sh` with the current settings. A `.desktop` file in `~/.config/autostart/` runs this script at login with a 5-second delay to let the desktop fully load first.
-
----
-
-## File structure
-
-```
-~/.config/wallpaper-engine/config.sh    # Your paths (binary, Steam, assets)
-~/.local/bin/change-wallpaper.sh        # Main script (this project)
-~/.local/bin/start-wallpaper.sh         # Auto-generated autostart script
-~/.config/autostart/wallpaper-engine.desktop
-~/.local/share/applications/wallpaper-engine.desktop
-```
-
----
-
-## Known limitations
-
-- **Wayland is not supported.** This solution relies on `xrandr`, `xdotool`, and `wmctrl`, which don't work on Wayland. For Wayland, `linux-wallpaperengine` has experimental `--layer` support but requires a completely different approach.
-- **KDE Plasma** has its own native integration with `linux-wallpaperengine` and doesn't need this.
-- **Scene-type wallpapers only.** Video wallpapers (`.mp4`) can be played with the Hanabi GNOME extension instead.
-- **Rendering glitches** may appear on some wallpapers due to incomplete shader support in `linux-wallpaperengine`. This is a limitation of the backend, not this script.
-
----
-
-## Credits
-
-- [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) by Almamu — the engine that makes all of this possible
-- Solution developed by **Gabriel Dias** on Zorin OS 17
-
----
-
-## License
-
-MIT
+Tested live on Zorin OS 18.1 / GNOME 46 / X11. The session fix was checked through three close/reopen cycles, rapid double launch, and a legacy shortcut, preserving the same browser and renderer processes. A fresh end-to-end installation and reboot have not been retested for this release.

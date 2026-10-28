@@ -1,0 +1,937 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 11565a1..bfe6179 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -117,6 +117,8 @@ DownloadCEF("${CEF_PLATFORM}" "${CEF_VERSION}" "${CMAKE_CURRENT_BINARY_DIR}/cef"
+ list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
+ 
+ find_package(CEF REQUIRED)
++# CEF distributes Debug and Release only, including for RelWithDebInfo builds.
++set(CEF_BINARY_DIR "${CEF_ROOT}/$<IF:$<CONFIG:Debug>,Debug,Release>")
+ 
+ # remove some switches that forbid us from using things that are commonplace in our codebase
+ list(REMOVE_ITEM CEF_CXX_COMPILER_FLAGS -fno-exceptions)
+@@ -128,10 +130,17 @@ list(APPEND CEF_CXX_COMPILER_FLAGS -std=c++20)
+ list(APPEND CEF_EXE_LINKER_FLAGS -rdynamic)
+ # remove the vulkan library from the files to copy so it doesn't fail after removing it
+ list(REMOVE_ITEM CEF_BINARY_FILES libvulkan.so.1)
++# Do not let CEF's bundled SwiftShader Vulkan loader shadow system Vulkan while
++# linking/running against libmpv (it lacks vkCreateXlibSurfaceKHR).
++if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${CEF_ROOT}/Release/libvulkan.so.1")
++    file(RENAME "${CEF_ROOT}/Release/libvulkan.so.1" "${CEF_ROOT}/Release/libvulkan.so.1.unused")
++endif()
+ 
+ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/output)
+ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
+ set(TARGET_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/output)
++# Load the runtime copy of CEF beside its ICU data, including in build trees.
++set(CMAKE_BUILD_RPATH "${TARGET_OUTPUT_DIRECTORY};${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+ 
+ # RPATH configuration: use build directories during development, but $ORIGIN after installation
+ # NOTE: \$ORIGIN must be escaped because CMake treats $VAR as variable expansion.
+@@ -687,7 +696,8 @@ REPLACED_SET_EXECUTABLE_TARGET_PROPERTIES(linux-wallpaperengine-lib)
+ add_executable(linux-wallpaperengine
+     src/main.cpp)
+ 
+-target_link_libraries (linux-wallpaperengine PUBLIC linux-wallpaperengine-lib)
++target_link_options(linux-wallpaperengine PRIVATE "LINKER:--no-as-needed")
++target_link_libraries (linux-wallpaperengine PUBLIC libcef_lib linux-wallpaperengine-lib)
+ 
+ # Install the main executable and shared library via install(TARGETS)
+ # so that CMake automatically strips/replaces the build-time RPATH.
+diff --git a/src/WallpaperEngine/Application/ApplicationContext.cpp b/src/WallpaperEngine/Application/ApplicationContext.cpp
+index 510ec95..3a71534 100644
+--- a/src/WallpaperEngine/Application/ApplicationContext.cpp
++++ b/src/WallpaperEngine/Application/ApplicationContext.cpp
+@@ -242,7 +242,13 @@ const ApplicationContext::PlaylistDefinition& ApplicationContext::getPlaylistFro
+     return cur->second;
+ }
+ 
+-ApplicationContext::ApplicationContext (int argc, char* argv[]) : m_argc (argc), m_argv (argv) { }
++ApplicationContext::ApplicationContext (int argc, char* argv[]) : m_argc (argc) {
++    m_argumentStorage.reserve (argc);
++    for (int i = 0; i < argc; ++i) m_argumentStorage.emplace_back (argv[i]);
++    for (auto& arg : m_argumentStorage) m_argumentPointers.push_back (arg.data ());
++    m_argumentPointers.push_back (nullptr);
++    m_argv = m_argumentPointers.data ();
++}
+ 
+ void ApplicationContext::loadSettingsFromArgv () {
+     std::string lastScreen;
+diff --git a/src/WallpaperEngine/Application/ApplicationContext.h b/src/WallpaperEngine/Application/ApplicationContext.h
+index 3af58c3..25c0049 100644
+--- a/src/WallpaperEngine/Application/ApplicationContext.h
++++ b/src/WallpaperEngine/Application/ApplicationContext.h
+@@ -244,6 +244,8 @@ public:
+ 
+ private:
+     /** Program argument count on startup */
++    std::vector<std::string> m_argumentStorage;
++    std::vector<char*> m_argumentPointers;
+     int m_argc;
+     /** Program arguments on startup */
+     char** m_argv;
+diff --git a/src/WallpaperEngine/Application/WallpaperApplication.cpp b/src/WallpaperEngine/Application/WallpaperApplication.cpp
+index c9107af..f1e2b38 100644
+--- a/src/WallpaperEngine/Application/WallpaperApplication.cpp
++++ b/src/WallpaperEngine/Application/WallpaperApplication.cpp
+@@ -23,6 +23,7 @@
+ #endif /* DEMOMODE */
+ 
+ #include <algorithm>
++#include <GLFW/glfw3.h>
+ #include <climits>
+ #include <numeric>
+ #include <unistd.h>
+@@ -66,7 +67,6 @@ WallpaperApplication::WallpaperApplication (ApplicationContext& context) : m_con
+     this->initializeSubsystems ();
+     this->loadBackgrounds ();
+     this->setupProperties ();
+-    this->setupBrowser ();
+     this->initializePlaylists ();
+ }
+ 
+@@ -824,6 +824,9 @@ void WallpaperApplication::setupOpenGLDebugging () {
+ 
+ void WallpaperApplication::setup () {
+     this->setupOutput ();
++    auto* graphicsContext = glfwGetCurrentContext ();
++    this->setupBrowser ();
++    if (graphicsContext) glfwMakeContextCurrent (graphicsContext);
+     this->setupAudio ();
+     this->prepareOutputs ();
+     this->setupOpenGLDebugging ();
+diff --git a/src/WallpaperEngine/Assets/AssetLocator.cpp b/src/WallpaperEngine/Assets/AssetLocator.cpp
+index 8d092d2..a6c6dbe 100644
+--- a/src/WallpaperEngine/Assets/AssetLocator.cpp
++++ b/src/WallpaperEngine/Assets/AssetLocator.cpp
+@@ -1,4 +1,5 @@
+ #include "AssetLocator.h"
++#include "WallpaperEngine/Data/Utils/RelaxedJson.h"
+ 
+ #include "AssetLoadException.h"
+ 
+@@ -63,7 +64,8 @@ std::string AssetLocator::includeShader (const std::filesystem::path& filename)
+ 
+ std::string AssetLocator::readString (const std::filesystem::path& filename) const {
+     try {
+-	return this->m_filesystem->readString (filename);
++	auto contents = this->m_filesystem->readString (filename);
++        return filename.extension () == ".json" ? Data::Utils::stripTrailingCommas (std::move (contents)) : contents;
+     } catch (std::filesystem::filesystem_error& base) {
+ 	throw AssetLoadException (base);
+     }
+diff --git a/src/WallpaperEngine/Data/JSON.h b/src/WallpaperEngine/Data/JSON.h
+index 7d99883..feaf7d9 100644
+--- a/src/WallpaperEngine/Data/JSON.h
++++ b/src/WallpaperEngine/Data/JSON.h
+@@ -68,7 +68,7 @@ public:
+ 
+ 	return (*it);
+     }
+-    [[nodiscard]] std::optional<base_type> optional (const std::string& key) const noexcept {
++    [[nodiscard]] std::optional<base_type> optional (const std::string& key) const {
+ 	auto base = this->base ();
+ 	const auto it = base.find (key);
+ 	auto result = std::optional<base_type> {};
+@@ -79,7 +79,7 @@ public:
+ 
+ 	return result;
+     }
+-    template <typename T> [[nodiscard]] std::optional<T> optional (const std::string& key) const noexcept {
++    template <typename T> [[nodiscard]] std::optional<T> optional (const std::string& key) const {
+ 	auto base = this->base ();
+ 	const auto it = base.find (key);
+ 
+@@ -89,7 +89,7 @@ public:
+ 
+ 	return *it;
+     }
+-    template <typename T> [[nodiscard]] T optional (const std::string& key, T defaultValue) const noexcept {
++    template <typename T> [[nodiscard]] T optional (const std::string& key, T defaultValue) const {
+ 	auto base = this->base ();
+ 	const auto it = base.find (key);
+ 
+diff --git a/src/WallpaperEngine/Data/Model/Object.h b/src/WallpaperEngine/Data/Model/Object.h
+index c346aab..14f9c68 100644
+--- a/src/WallpaperEngine/Data/Model/Object.h
++++ b/src/WallpaperEngine/Data/Model/Object.h
+@@ -611,7 +611,7 @@ struct TextData {
+     /** Vertical alignment: "top", "center", "bottom" */
+     std::string verticalalign;
+     /** Padding inside the bounding box */
+-    int padding;
++    glm::vec2 padding;
+     // TODO: PARSE LIMITS TOO!
+ };
+ 
+diff --git a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
+index 4e35f5a..d1dc9b5 100644
+--- a/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
++++ b/src/WallpaperEngine/Data/Parsers/ObjectParser.cpp
+@@ -69,7 +69,7 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
+ 	return parseImage (it, project, std::move (basedata), *imageIt);
+     } else if (soundIt != it.end () && soundIt->is_array ()) {
+ 	return parseSound (it, std::move (basedata));
+-    } else if (particleIt != it.end ()) {
++    } else if (particleIt != it.end () && !particleIt->is_null ()) {
+ 	return parseParticle (it, project, std::move (basedata));
+     } else if (textIt != it.end ()) {
+ 	return parseText (it, project, std::move (basedata));
+@@ -136,7 +136,12 @@ TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, O
+ 	    .visible = it.user ("visible", project.properties, true),
+ 	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
+ 	    .verticalalign = it.optional ("verticalalign", std::string ("center")),
+-	    .padding = it.optional ("padding", 0),
++	    .padding = [&] {
++		auto padding = it.optional ("padding");
++		if (!padding) return glm::vec2 (0.0f);
++		if (padding->is_number ()) return glm::vec2 (padding->get<float> ());
++		return static_cast<glm::vec2> (*padding);
++	    } (),
+ 	}
+     );
+ }
+diff --git a/src/WallpaperEngine/Data/Parsers/PropertyParser.cpp b/src/WallpaperEngine/Data/Parsers/PropertyParser.cpp
+index d09591d..41d6720 100644
+--- a/src/WallpaperEngine/Data/Parsers/PropertyParser.cpp
++++ b/src/WallpaperEngine/Data/Parsers/PropertyParser.cpp
+@@ -147,6 +147,9 @@ PropertySharedPtr PropertyParser::parseTextInput (const JSON& it, const std::str
+ 	    .name = name,
+ 	    .text = it.optional<std::string> ("text", ""),
+ 	},
+-	it.require ("value", "Property must have a value").dump ()
++	[&] {
++	    const auto value = it.require ("value", "Property must have a value");
++	    return value.is_string () ? value.get<std::string> () : value.dump ();
++	} ()
+     );
+ }
+diff --git a/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp b/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp
+index c108a0d..f909277 100644
+--- a/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp
++++ b/src/WallpaperEngine/Data/Parsers/WallpaperParser.cpp
+@@ -45,7 +45,7 @@ SceneUniquePtr WallpaperParser::parseScene (const JSON& file, Project& project)
+             },
+             .camera = {
+                 .fade = general.user ("camerafade", properties, false),
+-                .preview = general.optional ("camerapreview", false),
++                .preview = general.user ("camerapreview", properties, false)->value->getBool (),
+                 .bloom = {
+                     .enabled = general.user ("bloom", properties, false),
+                     .strength = general.user ("bloomstrength", properties, 0.0f),
+diff --git a/src/WallpaperEngine/Data/Utils/RelaxedJson.h b/src/WallpaperEngine/Data/Utils/RelaxedJson.h
+new file mode 100644
+index 0000000..282f266
+--- /dev/null
++++ b/src/WallpaperEngine/Data/Utils/RelaxedJson.h
+@@ -0,0 +1,25 @@
++#pragma once
++#include <string>
++#include <cctype>
++
++namespace WallpaperEngine::Data::Utils {
++// Wallpaper Engine assets permit trailing commas. Preserve positions and all
++// string bytes (including embedded SceneScript) while normalizing that syntax.
++inline std::string stripTrailingCommas (std::string source) {
++    bool quoted = false, escaped = false;
++    for (size_t i = 0; i < source.size (); ++i) {
++        const char ch = source[i];
++        if (quoted) {
++            if (escaped) escaped = false;
++            else if (ch == '\\') escaped = true;
++            else if (ch == '"') quoted = false;
++        } else if (ch == '"') quoted = true;
++        else if (ch == ',') {
++            size_t next = i + 1;
++            while (next < source.size () && std::isspace (static_cast<unsigned char> (source[next]))) ++next;
++            if (next < source.size () && (source[next] == ']' || source[next] == '}')) source[i] = ' ';
++        }
++    }
++    return source;
++}
++}
+diff --git a/src/WallpaperEngine/Render/CWallpaper.cpp b/src/WallpaperEngine/Render/CWallpaper.cpp
+index d0f7eab..156044a 100644
+--- a/src/WallpaperEngine/Render/CWallpaper.cpp
++++ b/src/WallpaperEngine/Render/CWallpaper.cpp
+@@ -1,4 +1,8 @@
+ #include "CWallpaper.h"
++#include <fstream>
++#include <chrono>
++#include <cstdlib>
++#include <cmath>
+ #include "WallpaperEngine/Logging/Log.h"
+ #include "WallpaperEngine/Render/Wallpapers/CScene.h"
+ #include "WallpaperEngine/Render/Wallpapers/CVideo.h"
+@@ -269,6 +273,36 @@ void CWallpaper::render (
+ 	vend = uvs.vend;
+     }
+ 
++    const double now = std::chrono::duration<double> (
++        std::chrono::steady_clock::now ().time_since_epoch ()).count ();
++    if (now >= m_positionNextCheck) {
++        m_positionNextCheck = now + 0.25;
++        const char* file = std::getenv ("WE_POSITION_FILE");
++        const char* monitor = std::getenv ("WE_POSITION_MONITOR");
++        if (file && monitor) {
++            try {
++                std::ifstream input (file);
++                auto data = nlohmann::json::parse (input);
++                auto entry = data.value (std::string (monitor), nlohmann::json::object ());
++                float x = entry.value ("x", 50.0f), y = entry.value ("y", 50.0f);
++                float zoom = entry.value ("zoom", 100.0f);
++                if (std::isfinite (x) && std::isfinite (y) && std::isfinite (zoom)) {
++                    m_positionX = std::clamp (x, 0.0f, 100.0f) / 100.0f;
++                    m_positionY = std::clamp (y, 0.0f, 100.0f) / 100.0f;
++                    m_positionZoom = std::clamp (zoom, 100.0f, 300.0f) / 100.0f;
++                }
++            } catch (const std::exception&) { /* Keep last valid settings during writes. */ }
++        }
++    }
++    const float uwidth = (uend - ustart) / m_positionZoom;
++    const float vheight = std::abs (vend - vstart) / m_positionZoom;
++    const bool inverted = vend < vstart;
++    ustart = (1.0f - uwidth) * m_positionX;
++    uend = ustart + uwidth;
++    const float top = (1.0f - vheight) * m_positionY;
++    vstart = inverted ? 1.0f - top : top;
++    vend = inverted ? vstart - vheight : vstart + vheight;
++
+     const GLfloat texCoords[] = {
+ 	ustart, vstart, uend, vstart, ustart, vend, ustart, vend, uend, vstart, uend, vend,
+     };
+diff --git a/src/WallpaperEngine/Render/CWallpaper.h b/src/WallpaperEngine/Render/CWallpaper.h
+index 87b2b07..90186dc 100644
+--- a/src/WallpaperEngine/Render/CWallpaper.h
++++ b/src/WallpaperEngine/Render/CWallpaper.h
+@@ -191,5 +191,7 @@ private:
+     std::optional<SpanInfo> m_spanInfo = std::nullopt;
+     /** Frame counter to avoid redundant renderFrame calls when shared across viewports */
+     uint32_t m_lastRenderedFrame = UINT32_MAX;
++    double m_positionNextCheck = 0;
++    float m_positionX = 0.5f, m_positionY = 0.5f, m_positionZoom = 1.0f;
+ };
+ } // namespace WallpaperEngine::Render
+diff --git a/src/WallpaperEngine/Render/Objects/CImage.cpp b/src/WallpaperEngine/Render/Objects/CImage.cpp
+index be0baca..bea06e1 100644
+--- a/src/WallpaperEngine/Render/Objects/CImage.cpp
++++ b/src/WallpaperEngine/Render/Objects/CImage.cpp
+@@ -938,6 +938,7 @@ void CImage::render () {
+ 
+     for (const auto end = this->m_passes.end (); cur != end; ++cur) {
+ 	if (std::next (cur) == end) {
++            if (this->getAlpha () <= 0.0f) continue;
+ 	    glColorMask (true, true, true, false);
+ 	}
+ 
+diff --git a/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp b/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
+index dd4f4d4..2deb2b6 100644
+--- a/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
++++ b/src/WallpaperEngine/Render/Shaders/GLSLContext.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <cassert>
+ #include <memory>
++#include <regex>
+ 
+ #include "SPIRV/GlslangToSpv.h"
+ #include "glslang/Include/ResourceLimits.h"
+@@ -134,7 +135,13 @@ GLSLContext& GLSLContext::get () {
+ std::pair<std::string, std::string> GLSLContext::toGlsl (const std::string& vertex, const std::string& fragment) {
+     glslang::TShader vertexShader (EShLangVertex);
+ 
+-    const char* vertexSource = vertex.c_str ();
++    // WE/HLSL accepts const-qualified return types; GLSL rejects them. Keep
++    // local/parameter const qualifiers and normalize only function declarations.
++    static const std::regex returnConst (R"((^|
++)([ 	]*)const[ 	]+([A-Za-z_]\w*[ 	]+[A-Za-z_]\w*[ 	]*\())");
++    const auto vertexText = std::regex_replace (vertex, returnConst, "$1$2$3");
++    const auto fragmentText = std::regex_replace (fragment, returnConst, "$1$2$3");
++    const char* vertexSource = vertexText.c_str ();
+     vertexShader.setStrings (&vertexSource, 1);
+     vertexShader.setEntryPoint ("main");
+     vertexShader.setEnvInput (glslang::EShSourceGlsl, EShLangVertex, glslang::EShClientOpenGL, 330);
+@@ -149,7 +156,7 @@ std::pair<std::string, std::string> GLSLContext::toGlsl (const std::string& vert
+     }
+     glslang::TShader fragmentShader (EShLangFragment);
+ 
+-    const char* fragmentSource = fragment.c_str ();
++    const char* fragmentSource = fragmentText.c_str ();
+     fragmentShader.setStrings (&fragmentSource, 1);
+     fragmentShader.setEntryPoint ("main");
+     fragmentShader.setEnvInput (glslang::EShSourceGlsl, EShLangFragment, glslang::EShClientOpenGL, 330);
+@@ -176,6 +183,9 @@ std::pair<std::string, std::string> GLSLContext::toGlsl (const std::string& vert
+ 
+     spirv_cross::CompilerGLSL vertexCompiler (spirv);
+     spirv_cross::CompilerGLSL::Options options;
++    // HLSL shaders often rely on zeroed locals. Avoid undefined GLSL values
++    // and driver-dependent output when a branch leaves a temporary unset.
++    options.force_zero_initialized_variables = true;
+     options.version = 330;
+     options.es = false;
+     vertexCompiler.set_common_options (options);
+diff --git a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
+index 4933440..ccf8ce3 100644
+--- a/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
++++ b/src/WallpaperEngine/Render/Wallpapers/CScene.cpp
+@@ -242,6 +242,10 @@ Render::CObject* CScene::dispatchObjectType (const Object& object) {
+ 	    return nullptr;
+ 	}
+ 
++        if (!particleData.material || !particleData.material->material) {
++            sLog.error ("Particle material missing; retaining layer transform only: ", particleData.name);
++            return new CObject (*this, object);
++        }
+ 	renderObject = new Objects::CParticle (*this, particleData);
+     } else {
+ 	sLog.error ("Unknown object type, creating placeholder, empty object: ", object.id);
+diff --git a/src/WallpaperEngine/Render/Wallpapers/CWeb.cpp b/src/WallpaperEngine/Render/Wallpapers/CWeb.cpp
+index d174953..1251a80 100644
+--- a/src/WallpaperEngine/Render/Wallpapers/CWeb.cpp
++++ b/src/WallpaperEngine/Render/Wallpapers/CWeb.cpp
+@@ -2,6 +2,7 @@
+ // https://github.com/if1live/cef-gl-example
+ // https://github.com/andmcgregor/cefgui
+ #include "CWeb.h"
++#include "WallpaperEngine/Data/Model/Property.h"
+ #include "WallpaperEngine/WebBrowser/CEF/WPSchemeHandlerFactory.h"
+ 
+ #include "WallpaperEngine/Data/Model/Project.h"
+@@ -17,6 +18,10 @@ CWeb::CWeb (
+     const Wallpaper& wallpaper, RenderContext& context, AudioContext& audioContext, WebBrowserContext& browserContext,
+     const WallpaperState::TextureUVsScaling& scalingMode, const uint32_t& clampMode
+ ) : CWallpaper (wallpaper, context, audioContext, scalingMode, clampMode), m_browserContext (browserContext) {
++    // Start at the real output size: a later resize would erase canvas/WebGL
++    // simulations that create their initial particles only during page load.
++    m_width = std::max (1, context.getOutput ().getFullWidth ());
++    m_height = std::max (1, context.getOutput ().getFullHeight ());
+     // setup framebuffers
+     this->setupFramebuffers ();
+ 
+@@ -27,7 +32,7 @@ CWeb::CWeb (
+ 
+     CefBrowserSettings browserSettings;
+     // documentaion says that 60 fps is maximum value
+-    browserSettings.windowless_frame_rate = std::max (60, context.getApp ().getContext ().settings.render.maximumFPS);
++    browserSettings.windowless_frame_rate = std::clamp (context.getApp ().getContext ().settings.render.maximumFPS, 1, 60);
+ 
+     this->m_client = new WebBrowser::CEF::BrowserClient (m_renderHandler);
+     // use the custom scheme for the wallpaper's files
+@@ -35,6 +40,29 @@ CWeb::CWeb (
+ 	+ "://root/" + this->getWeb ().filename;
+     this->m_browser
+ 	= CefBrowserHost::CreateBrowserSync (window_info, this->m_client, htmlURL, browserSettings, nullptr, nullptr);
++    if (!m_browser) throw std::runtime_error ("Unable to create the web wallpaper browser");
++    nlohmann::json properties = nlohmann::json::object ();
++    for (const auto& [name, property] : getWeb ().project.properties) {
++        nlohmann::json value;
++        switch (property->getType ()) {
++            case DynamicValue::Boolean: value = property->getBool (); break;
++            case DynamicValue::Int: value = property->getInt (); break;
++            case DynamicValue::Float: value = property->getFloat (); break;
++            case DynamicValue::Vec3: {
++                const auto color = property->getVec3 ();
++                value = std::to_string (color.x) + " " + std::to_string (color.y) + " " + std::to_string (color.z);
++                break;
++            }
++            default: value = property->toString (); break;
++        }
++        properties[name] = {{"value", value}};
++    }
++    m_propertyScript = "if (!window.__wePropsApplied && window.wallpaperPropertyListener) {"
++        "const listener = window.wallpaperPropertyListener;"
++        "if (listener.applyUserProperties) listener.applyUserProperties(" + properties.dump () + ");"
++        "if (listener.applyGeneralProperties) listener.applyGeneralProperties({fps:" + std::to_string (browserSettings.windowless_frame_rate) + "});"
++        "window.__wePropsApplied = true;}";
++
+ }
+ 
+ void CWeb::setSize (const int width, const int height) {
+@@ -78,6 +106,16 @@ void CWeb::renderFrame (const glm::ivec4& viewport) {
+     // But for now let it be like this
+     //  glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+     CefDoMessageLoopWork ();
++    if (!m_browser->IsLoading ()) {
++        nlohmann::json spectrum = nlohmann::json::array ();
++        const auto& recorder = getAudioContext ().getRecorder ();
++        // Current recorder supplies one spectrum; mirror it into WE's two channels.
++        for (int channel = 0; channel < 2; ++channel)
++            for (float value : recorder.audio64) spectrum.push_back (value);
++        m_browser->GetMainFrame ()->ExecuteJavaScript (
++            m_propertyScript + "if (typeof window.__weAudioListener === 'function') window.__weAudioListener(" + spectrum.dump () + ");",
++            m_browser->GetMainFrame ()->GetURL (), 0);
++    }
+ }
+ 
+ void CWeb::updateMouse (const glm::ivec4& viewport) {
+diff --git a/src/WallpaperEngine/Render/Wallpapers/CWeb.h b/src/WallpaperEngine/Render/Wallpapers/CWeb.h
+index f27fd50..fd40c5b 100644
+--- a/src/WallpaperEngine/Render/Wallpapers/CWeb.h
++++ b/src/WallpaperEngine/Render/Wallpapers/CWeb.h
+@@ -49,6 +49,7 @@ private:
+     CefRefPtr<WallpaperEngine::WebBrowser::CEF::BrowserClient> m_client = nullptr;
+     WallpaperEngine::WebBrowser::CEF::RenderHandler* m_renderHandler = nullptr;
+ 
++    std::string m_propertyScript;
+     int m_width = 16;
+     int m_height = 17;
+ 
+diff --git a/src/WallpaperEngine/Scripting/EngineObject.cpp b/src/WallpaperEngine/Scripting/EngineObject.cpp
+index b8399fa..d8261bf 100644
+--- a/src/WallpaperEngine/Scripting/EngineObject.cpp
++++ b/src/WallpaperEngine/Scripting/EngineObject.cpp
+@@ -1,5 +1,9 @@
+ #include "EngineObject.h"
+ #include "ScriptEngine.h"
++#include "WallpaperEngine/Render/Wallpapers/CScene.h"
++#include "WallpaperEngine/Data/Model/Wallpaper.h"
++#include "WallpaperEngine/Data/Model/Project.h"
++#include "WallpaperEngine/Data/Model/Property.h"
+ #include "WallpaperEngine/Logging/Log.h"
+ 
+ #include <ranges>
+@@ -13,6 +17,16 @@ extern float g_Daytime;
+ static uint32_t EngineInstanceId = 0;
+ std::map<uint32_t, EngineObject&> engineInstances;
+ 
++JSValue engine_get_user_properties (JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
++    const auto it = engineInstances.find (magic);
++    if (it == engineInstances.end ()) return JS_UNDEFINED;
++    JSValue result = JS_NewObject (ctx);
++    for (const auto& [name, property] : it->second.getScene ().getScene ().project.properties) {
++        JS_SetPropertyStr (ctx, result, name.c_str (), it->second.getEngine ().dynamicToJs (*property));
++    }
++    return result;
++}
++
+ JSValue engine_set_value (JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv) { return JS_EXCEPTION; }
+ 
+ JSValue engine_open_user_shortcut (JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv) {
+@@ -144,6 +158,11 @@ EngineObject::EngineObject (ScriptEngine& engine, Render::Wallpapers::CScene& sc
+ 
+     JS_DupValue (this->m_engine.getContext (), this->m_instance);
+ 
++    engineInstances.emplace (m_instanceId, *this);
++    JS_DefinePropertyGetSet (
++        m_engine.getContext (), m_instance, JS_NewAtom (m_engine.getContext (), "userProperties"),
++        JS_NewCFunctionMagic (m_engine.getContext (), engine_get_user_properties, "get", 0,
++                             JS_CFUNC_generic_magic, m_instanceId), JS_UNDEFINED, JS_PROP_ENUMERABLE);
+     // set properties
+     JS_SetOpaque (this->m_instance, this);
+     JS_DefinePropertyGetSet (
+@@ -176,14 +195,14 @@ EngineObject::EngineObject (ScriptEngine& engine, Render::Wallpapers::CScene& sc
+     JS_DefinePropertyValueStr (
+ 	this->m_engine.getContext (), this->m_instance, "setInterval",
+ 	JS_NewCFunctionMagic (
+-	    this->m_engine.getContext (), engine_set_interval, "setInterval", 2, JS_CFUNC_generic, this->m_instanceId
++	    this->m_engine.getContext (), engine_set_interval, "setInterval", 2, JS_CFUNC_generic_magic, this->m_instanceId
+ 	),
+ 	JS_PROP_ENUMERABLE
+     );
+     JS_DefinePropertyValueStr (
+ 	this->m_engine.getContext (), this->m_instance, "setTimeout",
+ 	JS_NewCFunctionMagic (
+-	    this->m_engine.getContext (), engine_set_timeout, "setTimeout", 2, JS_CFUNC_generic, this->m_instanceId
++	    this->m_engine.getContext (), engine_set_timeout, "setTimeout", 2, JS_CFUNC_generic_magic, this->m_instanceId
+ 	),
+ 	JS_PROP_ENUMERABLE
+     );
+@@ -214,7 +233,7 @@ EngineObject::~EngineObject () {
+ uint32_t EngineObject::reserveNextTimeoutId (JSValue function, uint64_t duration) {
+     const auto id = ++this->m_nextTimeoutId;
+ 
+-    this->m_timeouts[id] = Timeout { .callback = function,
++    this->m_timeouts[id] = Timeout { .callback = JS_DupValue (m_engine.getContext (), function),
+ 				     .duration = std::chrono::milliseconds (duration),
+ 				     .next = std::chrono::steady_clock::now () + std::chrono::milliseconds (duration) };
+ 
+@@ -225,7 +244,7 @@ uint32_t EngineObject::reserveNextIntervalId (JSValue function, uint64_t duratio
+     const auto id = ++this->m_nextIntervalId;
+ 
+     this->m_intervals[id]
+-	= Timeout { .callback = function,
++	= Timeout { .callback = JS_DupValue (m_engine.getContext (), function),
+ 		    .duration = std::chrono::milliseconds (duration),
+ 		    .next = std::chrono::steady_clock::now () + std::chrono::milliseconds (duration) };
+ 
+@@ -258,34 +277,28 @@ void EngineObject::clearTimeout (uint32_t id) {
+ 
+ void EngineObject::tick () {
+     const auto now = std::chrono::steady_clock::now ();
+-
+-    // check any interval and run them if needed
+-    for (auto& timeout : this->m_intervals | std::views::values) {
+-	if (timeout.next > now) {
+-	    continue;
+-	}
+-
+-	timeout.next = now + timeout.duration;
+-
+-	JS_Call (this->m_engine.getContext (), timeout.callback, JS_NULL, 0, nullptr);
++    auto* ctx = m_engine.getContext ();
++    std::vector<uint32_t> intervals, timeouts;
++    for (const auto& [id, timer] : m_intervals) if (timer.next <= now) intervals.push_back (id);
++    for (const auto& [id, timer] : m_timeouts) if (timer.next <= now) timeouts.push_back (id);
++    // Callbacks may cancel themselves or other timers, so never iterate a live
++    // map while executing JS, and retain the callback through cancellation.
++    for (auto id : intervals) {
++        auto it = m_intervals.find (id);
++        if (it == m_intervals.end ()) continue;
++        it->second.next = now + it->second.duration;
++        auto callback = JS_DupValue (ctx, it->second.callback);
++        auto result = JS_Call (ctx, callback, JS_NULL, 0, nullptr);
++        JS_FreeValue (ctx, result);
++        JS_FreeValue (ctx, callback);
+     }
+-
+-    std::vector<uint32_t> removeTimeouts;
+-
+-    // check any timeout and run them if needed
+-    for (auto& [id, timeout] : this->m_timeouts) {
+-	if (timeout.next > now) {
+-	    continue;
+-	}
+-
+-	JS_Call (this->m_engine.getContext (), timeout.callback, JS_NULL, 0, nullptr);
+-
+-	JS_FreeValue (this->m_engine.getContext (), timeout.callback);
+-
+-	removeTimeouts.push_back (id);
+-    }
+-
+-    for (auto id : removeTimeouts) {
+-	this->m_timeouts.erase (id);
++    for (auto id : timeouts) {
++        auto it = m_timeouts.find (id);
++        if (it == m_timeouts.end ()) continue;
++        auto callback = it->second.callback;
++        m_timeouts.erase (it);
++        auto result = JS_Call (ctx, callback, JS_NULL, 0, nullptr);
++        JS_FreeValue (ctx, result);
++        JS_FreeValue (ctx, callback);
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/WallpaperEngine/Scripting/ScriptEngine.cpp b/src/WallpaperEngine/Scripting/ScriptEngine.cpp
+index e690b92..42e105c 100644
+--- a/src/WallpaperEngine/Scripting/ScriptEngine.cpp
++++ b/src/WallpaperEngine/Scripting/ScriptEngine.cpp
+@@ -153,7 +153,7 @@ static void jsToDynamicValue (JSContext* ctx, JSValue val, DynamicValue& source)
+ 	    JS_FreeValue (ctx, w);
+ 	});
+ 
+-	if (!JS_IsNumber (x) || JS_IsNumber (y)) {
++	if (!JS_IsNumber (x) || !JS_IsNumber (y)) {
+ 	    sLog.exception ("Vector's x and y components must be numbers");
+ 	}
+ 
+@@ -380,14 +380,9 @@ ScriptLayerHandle ScriptEngine::createLayerScript (
+ 	<< "    get dt()          { var c = globalThis.__sceneCtx; return c ? c.dt   : 0; },\n"
+ 	<< "    get fps()         { var c = globalThis.__sceneCtx; return c ? c.fps  : 60; },\n"
+ 	<< "  };\n"
+-	// Minimal WE `engine` shim. Real Wallpaper Engine exposes a broad API
+-	// (media events, audio buffer, user input); we provide just enough for
+-	// the common built-in text scripts to run without ReferenceError.
+-	// `frametime` is the per-frame delta in seconds (what InsertFPS reads).
+-	<< "  var engine = {\n"
+-	<< "    get frametime() { var c = globalThis.__sceneCtx; return c ? c.dt : 0; },\n"
+-	<< "    get time()      { var c = globalThis.__sceneCtx; return c ? c.time : 0; },\n"
+-	<< "  };\n"
++	// Preserve the native engine API (properties and timers) in text scripts.
++	<< "  var engine = Object.create(globalThis.engine);\n"
++	<< "  Object.defineProperty(engine, 'time', { get: function() { var c = globalThis.__sceneCtx; return c ? c.time : 0; } });\n"
+ 	<< "  function createScriptProperties() {\n"
+ 	<< "    var builder = {\n"
+ 	<< "      addSlider:   function(o){ if (!(o.name in __props)) __props[o.name] = o.value; return builder; },\n"
+diff --git a/src/WallpaperEngine/Testing/Cases/PropertyParser.cpp b/src/WallpaperEngine/Testing/Cases/PropertyParser.cpp
+index c0bf921..533a906 100644
+--- a/src/WallpaperEngine/Testing/Cases/PropertyParser.cpp
++++ b/src/WallpaperEngine/Testing/Cases/PropertyParser.cpp
+@@ -30,4 +30,56 @@ TEST_CASE ("Directory properties are parsed as file-like properties") {
+ 
+     REQUIRE (property != nullptr);
+     CHECK (property->dump ().find ("folder - file") != std::string::npos);
+-}
+\ No newline at end of file
++}
++#include "WallpaperEngine/Data/Parsers/ObjectParser.h"
++#include "WallpaperEngine/Data/Model/Project.h"
++#include "WallpaperEngine/Data/Model/Wallpaper.h"
++
++TEST_CASE ("Text padding supports Wallpaper Engine vector and legacy scalar values") {
++    WallpaperEngine::Data::Model::Project project {};
++    for (const auto& padding : { JSON ("32.00000 16.00000"), JSON (8) }) {
++        const JSON object = {{"id", 1}, {"name", "label"}, {"text", "sample"}, {"padding", padding}};
++        auto parsed = WallpaperEngine::Data::Parsers::ObjectParser::parse (object, project);
++        const auto* text = dynamic_cast<WallpaperEngine::Data::Model::Text*> (parsed.get ());
++        REQUIRE (text != nullptr);
++        CHECK (text->padding.x == (padding.is_string () ? 32.0f : 8.0f));
++        CHECK (text->padding.y == (padding.is_string () ? 16.0f : 8.0f));
++    }
++}
++
++TEST_CASE ("Invalid optional JSON values propagate instead of terminating") {
++    const JSON value = {{"count", "invalid"}};
++    CHECK_THROWS (value.optional ("count", 0));
++}
++
++TEST_CASE ("Text input properties preserve their string without JSON quotes") {
++    const JSON data = {{"type", "textinput"}, {"value", "World"}};
++    auto property = PropertyParser::parse (data, "name");
++    REQUIRE (property != nullptr);
++    CHECK (property->getString () == "World");
++}
++
++TEST_CASE ("Null particle metadata must not hide a text layer") {
++    WallpaperEngine::Data::Model::Project project {};
++    const JSON object = {{"id",1},{"name","Clock"},{"text","12:34"},{"particle",nullptr},{"padding",32}};
++    auto parsed = WallpaperEngine::Data::Parsers::ObjectParser::parse (object, project);
++    CHECK (dynamic_cast<WallpaperEngine::Data::Model::Text*> (parsed.get ()) != nullptr);
++}
++
++#include "WallpaperEngine/Data/Utils/RelaxedJson.h"
++TEST_CASE ("Workshop JSON trailing commas preserve script strings") {
++    using WallpaperEngine::Data::Utils::stripTrailingCommas;
++    const auto parsed = JSON::parse (stripTrailingCommas (R"({"files":["a",],"script":"literal,] and ,}",})"));
++    CHECK (parsed["files"].size () == 1);
++    CHECK (parsed["script"].get<std::string> () == "literal,] and ,}");
++    CHECK_THROWS (JSON::parse (stripTrailingCommas ("[1,,]")));
++}
++
++#include "WallpaperEngine/Render/Shaders/GLSLContext.h"
++TEST_CASE ("GLSL translation accepts constant function returns from WE shaders") {
++    auto shaders = WallpaperEngine::Render::Shaders::GLSLContext::get ().toGlsl (
++        "#version 330\nvoid main() { gl_Position = vec4(0.0); }",
++        "#version 330\nout vec4 color;\nconst vec4 sampleColor() { const float amount = 1.0; return vec4(amount); }\nvoid main() { color = sampleColor(); }");
++    CHECK_FALSE (shaders.first.empty ());
++    CHECK_FALSE (shaders.second.empty ());
++}
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp b/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
+index 93c82ed..109a213 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/BrowserApp.cpp
+@@ -18,6 +18,11 @@ void BrowserApp::OnContextInitialized () {
+ }
+ 
+ void BrowserApp::OnBeforeCommandLineProcessing (const CefString& process_type, CefRefPtr<CefCommandLine> command_line) {
++    // Offscreen pixels are uploaded by our OpenGL renderer; CEF compositing
++    // must not compete for its GLX context. WebGL uses desktop OpenGL through ANGLE, avoiding SwiftShader Vulkan conflicts.
++    command_line->AppendSwitchWithValue ("use-gl", "angle");
++    command_line->AppendSwitchWithValue ("use-angle", "gl");
++    command_line->AppendSwitch ("disable-gpu-compositing");
+     command_line->AppendSwitchWithValue (
+ 	"--disable-features",
+ 	"IsolateOrigins,HardwareMediaKeyHandling,WebContentsOcclusion,RendererCodeIntegrityEnabled,site-per-process"
+@@ -47,6 +52,12 @@ if (process_type.empty()) {
+ }
+ 
+ void BrowserApp::OnBeforeChildProcessLaunch (CefRefPtr<CefCommandLine> command_line) {
++    std::string ids;
++    for (const auto& [id, factory] : this->getHandlerFactories ()) {
++        if (!ids.empty ()) ids += ",";
++        ids += id;
++    }
++    command_line->AppendSwitchWithValue ("we-web-ids", ids);
+     // add back any parameters we had before so the new process can load up everything needed
+     for (int i = 1; i < this->getApplication ().getContext ().getArgc (); i++) {
+ 	command_line->AppendArgument (this->getApplication ().getContext ().getArgv ()[i]);
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.cpp b/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.cpp
+index 14618ce..3eb7378 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.cpp
+@@ -1,7 +1,13 @@
+ #include "BrowserClient.h"
++#include "WallpaperEngine/Logging/Log.h"
+ 
+ using namespace WallpaperEngine::WebBrowser::CEF;
+ 
+ BrowserClient::BrowserClient (CefRefPtr<CefRenderHandler> ptr) : m_renderHandler (std::move (ptr)) { }
+ 
+-CefRefPtr<CefRenderHandler> BrowserClient::GetRenderHandler () { return m_renderHandler; }
+\ No newline at end of file
++CefRefPtr<CefRenderHandler> BrowserClient::GetRenderHandler () { return m_renderHandler; }
++bool BrowserClient::OnConsoleMessage (CefRefPtr<CefBrowser> browser, cef_log_severity_t level,
++                                     const CefString& message, const CefString& source, int line) {
++    if (level >= LOGSEVERITY_WARNING) sLog.error ("Web wallpaper: ", message.ToString (), " (", source.ToString (), ":", line, ")");
++    return false;
++}
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.h b/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.h
+index 499bb73..b7ee124 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.h
++++ b/src/WallpaperEngine/WebBrowser/CEF/BrowserClient.h
+@@ -1,18 +1,23 @@
+ #pragma once
+ 
+ #include "include/cef_client.h"
++#include "include/cef_display_handler.h"
+ 
+ namespace WallpaperEngine::WebBrowser::CEF {
+ // *************************************************************************
+ //! \brief Provide access to browser-instance-specific callbacks. A single
+ //! CefClient instance can be shared among any number of browsers.
+ // *************************************************************************
+-class BrowserClient : public CefClient {
++class BrowserClient : public CefClient, public CefDisplayHandler {
+ public:
+     explicit BrowserClient (CefRefPtr<CefRenderHandler> ptr);
+ 
+     [[nodiscard]] CefRefPtr<CefRenderHandler> GetRenderHandler () override;
+ 
++    CefRefPtr<CefDisplayHandler> GetDisplayHandler () override { return this; }
++    bool OnConsoleMessage (CefRefPtr<CefBrowser> browser, cef_log_severity_t level,
++                           const CefString& message, const CefString& source, int line) override;
++
+     CefRefPtr<CefRenderHandler> m_renderHandler = nullptr;
+ 
+     IMPLEMENT_REFCOUNTING (BrowserClient);
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp b/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
+index fc31baa..72e9784 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/RenderHandler.cpp
+@@ -24,4 +24,4 @@ int RenderHandler::getWidth () const { return this->m_webdata->getWidth (); }
+ 
+ int RenderHandler::getHeight () const { return this->m_webdata->getHeight (); }
+ 
+-GLuint RenderHandler::texture () const { return this->m_webdata->getWallpaperFramebuffer (); }
+\ No newline at end of file
++GLuint RenderHandler::texture () const { return this->m_webdata->getWallpaperTexture (); }
+\ No newline at end of file
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.cpp b/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.cpp
+index 7b10769..88e78a3 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.cpp
++++ b/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.cpp
+@@ -5,12 +5,16 @@
+ using namespace WallpaperEngine::WebBrowser::CEF;
+ 
+ SubprocessApp::SubprocessApp (WallpaperEngine::Application::WallpaperApplication& application) :
+-    m_application (application) {
+-    for (const auto& info : this->m_application.getBackgrounds () | std::views::values) {
++    m_application (&application) {
++    for (const auto& info : this->m_application->getBackgrounds () | std::views::values) {
+ 	this->m_handlerFactories[info->workshopId] = new WPSchemeHandlerFactory (*info);
+     }
+ }
+ 
++SubprocessApp::SubprocessApp (const std::vector<std::string>& workshopIds) {
++    for (const auto& id : workshopIds) this->m_handlerFactories[id] = nullptr;
++}
++
+ void SubprocessApp::OnRegisterCustomSchemes (CefRawPtr<CefSchemeRegistrar> registrar) {
+     // register all the needed schemes, "wp" + the background id is going to be our scheme
+     for (const auto& workshopId : this->m_handlerFactories | std::views::keys) {
+@@ -22,9 +26,15 @@ void SubprocessApp::OnRegisterCustomSchemes (CefRawPtr<CefSchemeRegistrar> regis
+ }
+ 
+ const WallpaperEngine::Application::WallpaperApplication& SubprocessApp::getApplication () const {
+-    return this->m_application;
++    return *this->m_application;
+ }
+ 
+ const std::map<std::string, WPSchemeHandlerFactory*>& SubprocessApp::getHandlerFactories () const {
+     return this->m_handlerFactories;
+-}
+\ No newline at end of file
++}
++void SubprocessApp::OnContextCreated (CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                                      CefRefPtr<CefV8Context> context) {
++    frame->ExecuteJavaScript (
++        "window.wallpaperRegisterAudioListener = function(callback) { window.__weAudioListener = callback; };",
++        frame->GetURL (), 0);
++}
+diff --git a/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.h b/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.h
+index 532f1f4..dbe0114 100644
+--- a/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.h
++++ b/src/WallpaperEngine/WebBrowser/CEF/SubprocessApp.h
+@@ -3,16 +3,23 @@
+ #include "WPSchemeHandlerFactory.h"
+ #include "WallpaperEngine/WebBrowser/WebBrowserContext.h"
+ #include "include/cef_app.h"
++#include "include/cef_render_process_handler.h"
+ 
+ namespace WallpaperEngine::Application {
+ class WallpaperApplication;
+ }
+ 
+ namespace WallpaperEngine::WebBrowser::CEF {
+-class SubprocessApp : public CefApp {
++class SubprocessApp : public CefApp, public CefRenderProcessHandler {
+ public:
+     explicit SubprocessApp (WallpaperEngine::Application::WallpaperApplication& application);
+ 
++    explicit SubprocessApp (const std::vector<std::string>& workshopIds);
++
++    CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler () override { return this; }
++    void OnContextCreated (CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                           CefRefPtr<CefV8Context> context) override;
++
+     void OnRegisterCustomSchemes (CefRawPtr<CefSchemeRegistrar> registrar) override;
+ 
+ protected:
+@@ -21,7 +28,7 @@ protected:
+ 
+ private:
+     std::map<std::string, WPSchemeHandlerFactory*> m_handlerFactories = {};
+-    WallpaperEngine::Application::WallpaperApplication& m_application;
++    WallpaperEngine::Application::WallpaperApplication* m_application = nullptr;
+     IMPLEMENT_REFCOUNTING (SubprocessApp);
+     DISALLOW_COPY_AND_ASSIGN (SubprocessApp);
+ };
+diff --git a/src/WallpaperEngine/WebBrowser/WebBrowserContext.cpp b/src/WallpaperEngine/WebBrowser/WebBrowserContext.cpp
+index 1b2da22..c4f0c1d 100644
+--- a/src/WallpaperEngine/WebBrowser/WebBrowserContext.cpp
++++ b/src/WallpaperEngine/WebBrowser/WebBrowserContext.cpp
+@@ -82,6 +82,13 @@ WebBrowserContext::WebBrowserContext (WallpaperEngine::Application::WallpaperApp
+     // CefString(&settings.cache_path) = "OffScreenCEF/godot/";
+     //  CefString(&settings.browser_subprocess_path) = "path/to/client"
+     cef_string_utf8_to_utf16 (cache_path.c_str (), cache_path.length (), &settings.root_cache_path);
++    // The shared CEF library may live outside the executable directory in a
++    // development build. Point ICU/resources/locales at the copied runtime data.
++#if defined(__linux__)
++    const auto runtime = std::filesystem::canonical ("/proc/self/exe").parent_path ();
++    CefString (&settings.resources_dir_path) = runtime.string ();
++    CefString (&settings.locales_dir_path) = (runtime / "locales").string ();
++#endif
+     settings.windowless_rendering_enabled = true;
+ #if defined(CEF_NO_SANDBOX)
+     settings.no_sandbox = true;
+diff --git a/src/main.cpp b/src/main.cpp
+index 908ab69..bb49d60 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,5 +1,8 @@
+ #include <csignal>
+ #include <iostream>
++#include <sstream>
++#include "WallpaperEngine/WebBrowser/CEF/SubprocessApp.h"
++#include "include/cef_app.h"
+ 
+ #include "WallpaperEngine/Application/ApplicationContext.h"
+ #include "WallpaperEngine/Application/WallpaperApplication.h"
+@@ -22,6 +25,25 @@ void initLogging () {
+ 
+ int main (int argc, char* argv[]) {
+     try {
++        // Chromium subprocesses must enter CEF before starting DBus, opening
++        // assets, or spawning application threads. Those operations can disturb
++        // inherited zygote descriptors and cause startup failures.
++        bool cefChild = false;
++        std::vector<std::string> webIds;
++        for (int i = 1; i < argc; ++i) {
++            const std::string arg = argv[i];
++            if (arg.starts_with ("--type=")) cefChild = true;
++            if (arg.starts_with ("--we-web-ids=")) {
++                std::stringstream ids (arg.substr (13));
++                std::string id;
++                while (std::getline (ids, id, ',')) if (!id.empty ()) webIds.push_back (id);
++            }
++        }
++        if (cefChild) {
++            CefMainArgs args (argc, argv);
++            CefRefPtr<CefApp> child = new WallpaperEngine::WebBrowser::CEF::SubprocessApp (webIds);
++            return CefExecuteProcess (args, child, nullptr);
++        }
+ 	// if type parameter is specified, this is a subprocess, so no logging should be enabled from our side
+ 	bool enableLogging = true;
+ 	const std::string typeZygote = "--type=zygote";

@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Expose the GNOME adapter as the backend command expected by the full browser."""
+import os
+from pathlib import Path
+import sys
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
+from integration_config import backend_path
+renderer = backend_path()
+if renderer == Path(__file__).resolve():
+    raise SystemExit('BINARY must point to the real renderer, not this adapter wrapper')
+os.execv(sys.executable, [sys.executable, str(root / 'gnome-backend.py'), str(renderer), *sys.argv[1:]])

@@ -14,7 +14,7 @@ mkdir -p "$HOME/.local/bin"
 # ─── Check dependencies ────────────────────────────────────────────────────────
 
 MISSING=()
-for cmd in zenity xrandr xdotool wmctrl python3; do
+for cmd in zenity xrandr xprop xdotool wmctrl python3; do
   command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
 done
 
@@ -274,29 +274,19 @@ for name in "${SELECTED_ARR[@]}"; do
 
   CMD=("$BINARY" --window "$geom" --disable-mouse --disable-parallax
        --fps 60 --scaling fill --assets-dir "$ASSETS"
-       "${PROP_FLAGS[@]}" "$ID")
+       "${PROP_FLAGS[@]}" "$WORKSHOP/$ID")
 
+  CMD=("$HOME/.local/bin/run-wallpaper.sh" "$geom" "${CMD[@]}")
   "${CMD[@]}" &
 
-  CMD_STR="\"$BINARY\" --window \"$geom\" --disable-mouse --disable-parallax --fps 60 --scaling fill --assets-dir \"$ASSETS\""
-  for f in "${PROP_FLAGS[@]}"; do
-    CMD_STR+=" \"$f\""
-  done
-  CMD_STR+=" \"$ID\" &"
-  AUTOSTART_BODY+="$CMD_STR\n"
+  printf -v CMD_STR '%q ' "${CMD[@]}"
+  AUTOSTART_BODY+="$CMD_STR&"$'\n'
 
   if [ "$FIRST" = true ]; then
     FIRST=false
-    AUTOSTART_BODY+="\nsleep 4\n\n"
+    AUTOSTART_BODY+=$'\nsleep 4\n\n'
     sleep 4
   fi
-done
-
-sleep 3
-
-for wid in $(xdotool search --name "wallpaperengine" 2>/dev/null); do
-  wmctrl -i -r "$wid" -b add,below,sticky         2>/dev/null
-  wmctrl -i -r "$wid" -b add,skip_taskbar,skip_pager 2>/dev/null
 done
 
 # ─── Save autostart ───────────────────────────────────────────────────────────
@@ -308,13 +298,7 @@ sleep 5
 pkill -9 -f linux-wallpaperengine 2>/dev/null
 sleep 1
 
-$(echo -e "$AUTOSTART_BODY")
-sleep 3
-
-for wid in \$(xdotool search --name "wallpaperengine" 2>/dev/null); do
-  wmctrl -i -r "\$wid" -b add,below,sticky         2>/dev/null
-  wmctrl -i -r "\$wid" -b add,skip_taskbar,skip_pager 2>/dev/null
-done
+${AUTOSTART_BODY}
 STARTEOF
 
 chmod +x "$AUTOSTART"

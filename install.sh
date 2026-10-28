@@ -35,7 +35,7 @@ echo ""
 echo "Checking dependencies..."
 
 MISSING=()
-for cmd in zenity xrandr xdotool wmctrl python3; do
+for cmd in zenity xrandr xprop xdotool wmctrl python3; do
   if ! command -v "$cmd" &>/dev/null; then
     MISSING+=("$cmd")
     echo "  ✗ $cmd (missing)"
@@ -94,6 +94,9 @@ mkdir -p "$AUTOSTART_DIR"
 
 cp "$SCRIPT_DIR/change-wallpaper.sh" "$BIN_DIR/change-wallpaper.sh"
 chmod +x "$BIN_DIR/change-wallpaper.sh"
+cp "$SCRIPT_DIR/gnome-backend.py" "$BIN_DIR/gnome-backend.py"
+cp "$SCRIPT_DIR/run-wallpaper.sh" "$BIN_DIR/run-wallpaper.sh"
+chmod +x "$BIN_DIR/run-wallpaper.sh"
 echo "✓  change-wallpaper.sh → $BIN_DIR"
 
 # ─── Create .desktop for app menu ────────────────────────────────────────────
