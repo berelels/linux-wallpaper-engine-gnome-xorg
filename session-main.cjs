@@ -33,6 +33,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   let quitting = false;
+  let startHidden = process.env.LWE_START_HIDDEN === '1';
   const reveal = () => {
     const window = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
     if (!window) {
@@ -41,6 +42,7 @@ if (!app.requestSingleInstanceLock()) {
       });
       return;
     }
+    if (window.cancelHiddenStart) window.cancelHiddenStart();
     if (window.isMinimized()) window.restore();
     window.show();
     window.focus();
@@ -48,6 +50,13 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', reveal);
   app.on('before-quit', () => { quitting = true; });
   app.on('browser-window-created', (_event, window) => {
+    if (startHidden) {
+      // Login start (--background): skip only the window's own first show.
+      startHidden = false;
+      const show = window.show;
+      window.show = function () { window.show = show; };
+      window.cancelHiddenStart = () => { window.show = show; };
+    }
     window.on('close', event => {
       if (!quitting) {
         event.preventDefault();

@@ -23,5 +23,9 @@ const written='[Desktop Entry]\nComment=Launch Linux Wallpaper Engine on startup
 s=setup(true,{LWE_LOGIN_EXEC:'"/home/u/run" "/home/u/browser-launcher.py"'});s.files.writeFileSync(entry,written);
 assert.match(fs.readFileSync(entry,'utf8'),/^Exec="\/home\/u\/run" "\/home\/u\/browser-launcher.py"$/m);
 s.files.writeFileSync(path.join(temp,'other.txt'),written);assert.equal(fs.readFileSync(path.join(temp,'other.txt'),'utf8'),written);
+// Login start (--background): the window's own first show is skipped; opening the app again shows it.
+s=setup(true,{LWE_START_HIDDEN:'1'});s.app.emit('browser-window-created',{},s.window);s.window.show();assert.equal(s.stats().shown,0);
+s.app.emit('second-instance');assert.equal(s.stats().shown,1);s.window.show();assert.equal(s.stats().shown,2);
+s=setup(true);s.app.emit('browser-window-created',{},s.window);s.window.show();assert.equal(s.stats().shown,1);
 fs.rmSync(temp,{recursive:true});
-console.log('PASS: duplicate startup, close-to-hide, reveal same window, explicit quit, adapter PATH, login entry');
+console.log('PASS: duplicate startup, close-to-hide, reveal same window, explicit quit, adapter PATH, login entry, hidden login start');

@@ -61,6 +61,12 @@ class BrowserIntegrationTests(unittest.TestCase):
                                check=True,stdout=subprocess.PIPE,text=True).stdout.strip()
             self.assertEqual(out,str(tools))
 
+    def test_background_flag_is_kept_from_the_browser(self):
+        spec=importlib.util.spec_from_file_location('browser_launcher',ROOT/'browser-launcher.py')
+        launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+        self.assertEqual(launcher.browser_arguments(['--background']),([],True))
+        self.assertEqual(launcher.browser_arguments(['--x']),(['--x'],False))
+
     def test_restore_preserves_background_path_and_monitor_settings(self):
         with tempfile.TemporaryDirectory() as temp:
             bg=Path(temp)/'wallpaper with spaces';bg.mkdir()
