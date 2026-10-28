@@ -29,6 +29,22 @@ if (loginExec) {
   };
 }
 
+// The browser lists monitors with `xrandr --query`, again on every display
+// metrics change, including each work area change (a panel or dock appearing).
+// --query makes the X server reread every monitor's EDID, which retrains the
+// DisplayPort link and blanks the screen for a moment. --current returns the
+// same layout without probing.
+const childProcess = require('child_process');
+const util = require('util');
+const current = command => (typeof command === 'string'
+  ? command.replace(/\bxrandr --query\b/g, 'xrandr --current') : command);
+const exec = childProcess.exec;
+const execPromise = exec[util.promisify.custom];
+childProcess.exec = function (command, ...rest) { return exec.call(this, current(command), ...rest); };
+if (execPromise) {
+  childProcess.exec[util.promisify.custom] = (command, ...rest) => execPromise(current(command), ...rest);
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
