@@ -7,7 +7,7 @@ import signal
 import time
 import subprocess
 import sys
-from integration_config import config_home, read_config
+from integration_config import config_home, open_log, read_config
 
 HERE = Path(__file__).resolve().parent
 
@@ -23,7 +23,7 @@ def main():
     logs = config_home() / 'wallpaper-engine'
     logs.mkdir(parents=True, exist_ok=True)
     for script, logfile in [('sync-overview-background.py', 'overview-sync.log'), ('keep-desktop-icons.py', 'icon-stacking.log')]:
-        with (logs / logfile).open('a') as output:
+        with open_log(logs / logfile) as output:
             subprocess.Popen([sys.executable, str(HERE / script)], stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
     environment = dict(os.environ)
     environment['PATH'] = str(HERE / 'bin') + os.pathsep + environment.get('PATH', '')

@@ -72,7 +72,7 @@ index 3af58c3..25c0049 100644
      /** Program arguments on startup */
      char** m_argv;
 diff --git a/src/WallpaperEngine/Application/WallpaperApplication.cpp b/src/WallpaperEngine/Application/WallpaperApplication.cpp
-index c9107af..f1e2b38 100644
+index c9107af..e7b75c5 100644
 --- a/src/WallpaperEngine/Application/WallpaperApplication.cpp
 +++ b/src/WallpaperEngine/Application/WallpaperApplication.cpp
 @@ -23,6 +23,7 @@
@@ -101,6 +101,20 @@ index c9107af..f1e2b38 100644
      this->setupAudio ();
      this->prepareOutputs ();
      this->setupOpenGLDebugging ();
+@@ -857,7 +860,12 @@ void WallpaperApplication::render () {
+     static struct tm* timeinfo;
+ 
+     if (this->m_isPaused) {
+-	usleep (FULLSCREEN_CHECK_WAIT_TIME);
++	// FULLSCREEN_CHECK_WAIT_TIME is in milliseconds. Keep answering the window
++	// manager while paused, or GNOME reports the wallpaper as not responding.
++	usleep (FULLSCREEN_CHECK_WAIT_TIME * 1000);
++	if (glfwGetCurrentContext ()) {
++	    glfwPollEvents ();
++	}
+ 	if (this->m_fullScreenDetector->anythingFullscreen () && this->m_context.state.general.keepRunning) {
+ 	    return;
+ 	}
 diff --git a/src/WallpaperEngine/Assets/AssetLocator.cpp b/src/WallpaperEngine/Assets/AssetLocator.cpp
 index 8d092d2..a6c6dbe 100644
 --- a/src/WallpaperEngine/Assets/AssetLocator.cpp
@@ -313,6 +327,201 @@ index 87b2b07..90186dc 100644
 +    float m_positionX = 0.5f, m_positionY = 0.5f, m_positionZoom = 1.0f;
  };
  } // namespace WallpaperEngine::Render
+diff --git a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
+index 9195b08..5271a5a 100644
+--- a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
++++ b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.cpp
+@@ -1,8 +1,8 @@
+ #include "X11FullScreenDetector.h"
+ #include "WallpaperEngine/Logging/Log.h"
+ 
++#include <X11/Xatom.h>
+ #include <X11/Xlib.h>
+-#include <X11/extensions/Xrandr.h>
+ 
+ #include "WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h"
+ #include "WallpaperEngine/Render/Drivers/VideoFactories.h"
+@@ -52,60 +52,67 @@ X11FullScreenDetector::X11FullScreenDetector (Application::ApplicationContext& a
+ X11FullScreenDetector::~X11FullScreenDetector () { this->stop (); }
+ 
+ bool X11FullScreenDetector::anythingFullscreen () const {
+-    // stop rendering if anything is fullscreen
+-    bool isFullscreen = false;
+-    XWindowAttributes attribs;
+-    Window _;
+-    Window* children;
+-    unsigned int nchildren;
+-
+-    if (!XQueryTree (this->m_display, this->m_root, &_, &_, &children, &nchildren)) {
+-	return false;
++    // Ask the window manager (EWMH) instead of comparing window sizes with the
++    // monitors: sizes also matched maximized windows on a monitor without a
++    // panel and the wallpaper windows on the other monitors.
++    const auto now = std::chrono::steady_clock::now ();
++
++    if (now < this->m_nextCheck) {
++	return this->m_lastResult;
+     }
+ 
+-    const auto ourWindow = reinterpret_cast<Window> (dynamic_cast<GLFWOpenGLDriver&> (this->m_driver).getWindow ());
+-    Window parentWindow;
++    this->m_nextCheck = now + std::chrono::milliseconds (250);
++    this->m_lastResult = false;
+ 
+-    {
+-	Window root, *schildren = nullptr;
+-	unsigned int num_children;
++    const auto ourWindow = reinterpret_cast<Window> (dynamic_cast<GLFWOpenGLDriver&> (this->m_driver).getWindow ());
++    Atom type;
++    int format;
++    unsigned long count, remaining;
++    unsigned char* data = nullptr;
++
++    if (XGetWindowProperty (
++	    this->m_display, this->m_root, this->m_clientList, 0, 4096, False, XA_WINDOW, &type, &format, &count,
++	    &remaining, &data
++	) != Success
++	|| data == nullptr) {
++	return false;
++    }
+ 
+-	if (!XQueryTree (this->m_display, ourWindow, &root, &parentWindow, &schildren, &num_children)) {
+-	    return false;
+-	}
++    const auto* clients = reinterpret_cast<const Window*> (data);
+ 
+-	if (schildren) {
+-	    XFree (children);
+-	}
+-    }
++    for (unsigned long i = 0; i < count && !this->m_lastResult; i++) {
++	unsigned char* state = nullptr;
++	unsigned long atoms;
+ 
+-    for (unsigned int i = 0; i < nchildren; i++) {
+-	if (!XGetWindowAttributes (this->m_display, children[i], &attribs)) {
++	if (clients[i] == ourWindow
++	    || XGetWindowProperty (
++		   this->m_display, clients[i], this->m_wmState, 0, 64, False, XA_ATOM, &type, &format, &atoms,
++		   &remaining, &state
++	       ) != Success
++	    || state == nullptr) {
+ 	    continue;
+ 	}
+ 
+-	// ignore ourselves
+-	if (ourWindow == children[i] || parentWindow == children[i]) {
+-	    continue;
+-	}
++	bool fullscreen = false;
+ 
+-	if (attribs.map_state != IsViewable) {
+-	    continue;
++	for (unsigned long j = 0; j < atoms; j++) {
++	    fullscreen = fullscreen || reinterpret_cast<const Atom*> (state)[j] == this->m_fullscreen;
+ 	}
+ 
+-	// compare width and height with the different screens we have
+-	for (const auto& [name, viewport] : this->m_screens) {
+-	    if (attribs.x == viewport.x && attribs.y == viewport.y && attribs.width == viewport.z
+-		&& attribs.height == viewport.w) {
+-		isFullscreen = true;
+-		break;
+-	    }
++	XFree (state);
++
++	// minimized windows and windows on other workspaces are not viewable
++	XWindowAttributes attribs;
++
++	if (fullscreen && XGetWindowAttributes (this->m_display, clients[i], &attribs)
++	    && attribs.map_state == IsViewable) {
++	    this->m_lastResult = true;
+ 	}
+     }
+ 
+-    XFree (children);
++    XFree (data);
+ 
+-    return isFullscreen;
++    return this->m_lastResult;
+ }
+ 
+ void X11FullScreenDetector::reset () {
+@@ -121,43 +128,10 @@ void X11FullScreenDetector::initialize () {
+     XSetIOErrorExitHandler (this->m_display, CustomXIOErrorExitHandler, this);
+ #endif /* HAVE_XSETIOERROREXITHANDLER */
+ 
+-    int xrandr_result, xrandr_error;
+-
+-    if (!XRRQueryExtension (this->m_display, &xrandr_result, &xrandr_error)) {
+-	sLog.error ("XRandr is not present, fullscreen detection might not work");
+-	return;
+-    }
+-
+     this->m_root = DefaultRootWindow (this->m_display);
+-    XRRScreenResources* screenResources = XRRGetScreenResources (this->m_display, this->m_root);
+-
+-    if (screenResources == nullptr) {
+-	sLog.error ("Cannot detect screen sizes using xrandr, fullscreen detection might not work");
+-	return;
+-    }
+-
+-    for (int i = 0; i < screenResources->noutput; i++) {
+-	const XRROutputInfo* info = XRRGetOutputInfo (this->m_display, screenResources, screenResources->outputs[i]);
+-
+-	// screen not in use, ignore it
+-	if (info == nullptr || info->connection != RR_Connected) {
+-	    continue;
+-	}
+-
+-	XRRCrtcInfo* crtc = XRRGetCrtcInfo (this->m_display, screenResources, info->crtc);
+-
+-	// screen not active, ignore it
+-	if (crtc == nullptr) {
+-	    continue;
+-	}
+-
+-	// add the screen to the list of screens
+-	this->m_screens.emplace (std::string (info->name), glm::ivec4 (crtc->x, crtc->y, crtc->width, crtc->height));
+-
+-	XRRFreeCrtcInfo (crtc);
+-    }
+-
+-    XRRFreeScreenResources (screenResources);
++    this->m_clientList = XInternAtom (this->m_display, "_NET_CLIENT_LIST", False);
++    this->m_wmState = XInternAtom (this->m_display, "_NET_WM_STATE", False);
++    this->m_fullscreen = XInternAtom (this->m_display, "_NET_WM_STATE_FULLSCREEN", False);
+ }
+ 
+ void X11FullScreenDetector::stop () {
+diff --git a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.h b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.h
+index de9742c..b73d28c 100644
+--- a/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.h
++++ b/src/WallpaperEngine/Render/Drivers/Detectors/X11FullScreenDetector.h
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#include <glm/vec4.hpp>
++#include <chrono>
+ #include <string>
+ #include <vector>
+ 
+@@ -26,8 +26,13 @@ namespace Detectors {
+ 
+ 	Display* m_display = nullptr;
+ 	Window m_root;
+-	std::map<std::string, glm::ivec4> m_screens = {};
++	Atom m_clientList = None;
++	Atom m_wmState = None;
++	Atom m_fullscreen = None;
+ 	VideoDriver& m_driver;
++	// Checked at most four times a second; the render loop asks every frame.
++	mutable std::chrono::steady_clock::time_point m_nextCheck = {};
++	mutable bool m_lastResult = false;
+     };
+ } // namespace Detectors
+ } // namespace WallpaperEngine::Render::Drivers
+\ No newline at end of file
 diff --git a/src/WallpaperEngine/Render/Objects/CImage.cpp b/src/WallpaperEngine/Render/Objects/CImage.cpp
 index be0baca..bea06e1 100644
 --- a/src/WallpaperEngine/Render/Objects/CImage.cpp

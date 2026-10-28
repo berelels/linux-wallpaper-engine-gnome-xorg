@@ -33,7 +33,9 @@ OUTPUT = DATA_HOME / 'backgrounds/wallpaper-engine'
 
 def monitors():
     result = {}
-    output = subprocess.check_output(['xrandr', '--query'], text=True)
+    # Polled every 2 seconds: --query would make the X server reread every
+    # monitor's EDID each time; --current returns the layout already applied.
+    output = subprocess.check_output(['xrandr', '--current'], text=True)
     for line in output.splitlines():
         match = re.match(
             r'(\S+) connected (?:primary )?(\d+)x(\d+)([+-]\d+)([+-]\d+)', line)
@@ -213,7 +215,7 @@ def main():
     parser.add_argument('--backend', help='linux-wallpaperengine renderer executable')
     args = parser.parse_args()
     with single_instance():
-        done = pending = None
+        done = pending = failure = None
         changed = 0
         while True:
             try:
@@ -240,10 +242,14 @@ def main():
                         raise RuntimeError('Selected wallpaper windows are not ready')
                 if args.once:
                     return
+                failure = None
             except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
                 if args.once:
                     raise
-                print('Overview sync: ' + str(exc), flush=True)
+                # Retried every 2 seconds: log a lasting problem once, not forever.
+                if str(exc) != failure:
+                    print('Overview sync: ' + str(exc), flush=True)
+                failure = str(exc)
             time.sleep(2)
 
 

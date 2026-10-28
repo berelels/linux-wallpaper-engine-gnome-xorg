@@ -25,12 +25,44 @@ class PlacementTests(unittest.TestCase):
  def test_parent_death_kills_even_a_suspended_renderer(self):
   from unittest.mock import MagicMock
   libc=MagicMock();libc.prctl.return_value=0
-  with patch.object(bridge.ctypes,'CDLL',return_value=libc),patch.object(bridge.os,'getppid',return_value=123):
-   bridge.renderer_lifetime()
+  with patch.object(bridge.os,'getppid',return_value=123):
+   bridge.renderer_lifetime(libc)
   libc.prctl.assert_called_once_with(1,bridge.signal.SIGKILL,0,0,0)
- def test_disconnected_monitor_does_not_block_an_active_monitor(self):
+ def test_relay_never_blocks_the_renderer_when_nobody_reads(self):
+  import os,subprocess,sys,threading
+  # A renderer writing far more than a pipe holds, to a reader that never reads.
+  reader,writer=os.pipe()
+  try:
+   relay=bridge.Relay(writer,limit=4)
+   child=subprocess.Popen([sys.executable,'-c','import sys\nfor _ in range(4000): sys.stderr.write("x"*99+"\\n")'],stderr=subprocess.PIPE)
+   relay.attach(child.stderr)
+   self.assertEqual(child.wait(timeout=10),0)
+  finally:
+   os.close(reader)
+ def test_relay_forwards_output_while_read(self):
+  import io,os
+  reader,writer=os.pipe()
+  try:
+   relay=bridge.Relay(writer)
+   relay.attach(io.BufferedReader(io.BytesIO(b'Failed to compile shader\n')))
+   relay.drain()
+   self.assertEqual(os.read(reader,100),b'Failed to compile shader\n')
+  finally:
+   os.close(reader);os.close(writer)
+ def test_windowed_run_keeps_exit_code_and_relays_output(self):
+  import io
   from unittest.mock import MagicMock
-  child=MagicMock();child.pid=321;child.poll.side_effect=[None,0,0]
+  child=MagicMock();child.stderr=io.BufferedReader(io.BytesIO(b''));child.wait.return_value=3;child.poll.return_value=3
+  with patch.object(bridge.sys,'argv',['bridge','/backend','--window','0x0x800x600','--bg','1']),patch.object(bridge.subprocess,'Popen',return_value=child) as spawn,patch.object(bridge,'monitors') as monitors:
+   with self.assertRaises(SystemExit) as stop: bridge.main()
+  self.assertEqual(stop.exception.code,3)
+  self.assertEqual(spawn.call_args.args[0],['/backend','--window','0x0x800x600','--bg','1'])
+  self.assertEqual(spawn.call_args.kwargs['stderr'],bridge.subprocess.PIPE)
+  monitors.assert_not_called()
+ def test_disconnected_monitor_does_not_block_an_active_monitor(self):
+  import io
+  from unittest.mock import MagicMock
+  child=MagicMock();child.pid=321;child.poll.side_effect=[None,0,0];child.stderr=io.BufferedReader(io.BytesIO(b''))
   geometry=('0','0','1920','1080')
   with patch.object(bridge.sys,'argv',['bridge','/backend','--screen-root','missing','--screen-root','main']),patch.object(bridge,'monitors',return_value={'main':geometry}),patch.object(bridge.subprocess,'Popen',return_value=child) as spawn,patch.object(bridge.subprocess,'check_output',return_value='0x123 0 321 host wallpaper'),patch.object(bridge,'pin') as pin:
    bridge.main()

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from integration_config import backend_path, config_home
+from integration_config import backend_path, config_home, open_log
 from wallpaper_content import resolve_background
 
 
@@ -76,7 +76,7 @@ def restore():
     present = active_screens(renderer, active, bounds)
     logdir = config_home() / 'wallpaper-engine'
     logdir.mkdir(parents=True, exist_ok=True)
-    with (logdir / 'restore.log').open('a') as output:
+    with open_log(logdir / 'restore.log') as output:
         for screen, options in active.items():
             if screen not in bounds or screen in present: continue
             args = restore_args(renderer, screen, options, settings, Path(__file__).resolve().with_name('gnome-backend.py'))

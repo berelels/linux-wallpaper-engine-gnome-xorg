@@ -39,6 +39,11 @@ position, so the wallpaper continues to fill its monitor and stays below icons.
 - Honor the web frame-rate limit and create web views at their final dimensions.
 - Deliver web properties and audio callbacks. The current native recorder exposes
   a single spectrum; it is mirrored into the two web audio channels.
+- Pause for fullscreen windows only when the window manager reports
+  `_NET_WM_STATE_FULLSCREEN`. Comparing sizes also paused for maximized windows
+  on a monitor without a panel and for the wallpaper on the other monitor.
+  While paused, keep processing window events (GNOME otherwise shows "not
+  responding") and check four times a second instead of in a busy loop.
 
 Some scene features and graphics-driver diagnostics remain outside these fixes.
 A wallpaper displaying frames is not proof that every effect matches Windows.

@@ -4,31 +4,89 @@
 Usage: gnome-backend.py BACKEND [linux-wallpaperengine arguments...]
 Requires wmctrl, xprop, and xrandr on PATH. Does not change the Workshop browser.
 """
+import collections
 import ctypes
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from wallpaper_content import prepare_arguments
 
 
-def renderer_lifetime():
+def renderer_lifetime(libc):
     # The browser uses SIGKILL on Stop. Linux must also terminate its renderer
     # children when this supervisor disappears (SIGKILL cannot be trapped).
     # SIGTERM cannot terminate a renderer suspended by the game-pause service.
+    # Runs between fork and exec while relay threads exist, so libc is loaded
+    # beforehand and nothing here imports or loads a library.
     parent = os.getppid()
-    libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), 'prctl(PR_SET_PDEATHSIG) failed')
     if parent == 1 or os.getppid() != parent:
         os._exit(1)
 
 
+class Relay:
+    """Pass renderer output on to TARGET without ever blocking the renderer.
+
+    The Workshop browser opens stderr as a pipe but stops reading it for
+    wallpapers it has already rated. Once that pipe filled, every renderer
+    froze in the middle of a log write and GNOME reported it as not responding.
+    Output waits here while nobody reads, and the oldest chunks are dropped.
+    """
+
+    def __init__(self, target, limit=256):
+        self.target = target
+        self.chunks = collections.deque(maxlen=limit)
+        self.ready = threading.Condition()
+        self.readers, self.writing = [], False
+        threading.Thread(target=self._write, daemon=True).start()
+
+    def attach(self, stream):
+        reader = threading.Thread(target=self._read, args=(stream,), daemon=True)
+        reader.start()
+        self.readers.append(reader)
+
+    def drain(self, timeout=2):
+        """Briefly wait for the last output; the browser rates wallpapers by their exit errors."""
+        deadline = time.monotonic() + timeout
+        for reader in self.readers:
+            reader.join(max(0, deadline - time.monotonic()))
+        with self.ready:
+            while (self.chunks or self.writing) and time.monotonic() < deadline:
+                self.ready.wait(0.05)
+
+    def _read(self, stream):
+        with stream:
+            for chunk in iter(lambda: stream.read1(4096), b''):
+                with self.ready:
+                    self.chunks.append(chunk)
+                    self.ready.notify()
+
+    def _write(self):
+        while True:
+            with self.ready:
+                while not self.chunks:
+                    self.ready.wait()
+                chunk = self.chunks.popleft()
+                self.writing = True
+            try:
+                os.write(self.target, chunk)
+            except OSError:
+                pass  # Reader gone: keep draining so the renderers keep running.
+            with self.ready:
+                self.writing = False
+                self.ready.notify_all()
+
+
 def monitors():
-    output = subprocess.check_output(['xrandr', '--query'], text=True)
+    # --current reads the layout GNOME already applied; --query makes the X
+    # server probe every output again and reread each monitor's EDID.
+    output = subprocess.check_output(['xrandr', '--current'], text=True)
     found = {}
     for line in output.splitlines():
         match = re.match(r'(\S+) connected (?:primary )?(\d+)x(\d+)([+-]\d+)([+-]\d+)', line)
@@ -120,29 +178,40 @@ def main():
         else:
             args.append(original[i])
             i += 1
-    if not screens:
-        os.execv(backend, [backend, *original])
-    available = monitors()
-    inactive = [name for name in screens if name not in available]
-    screens = [name for name in screens if name in available]
-    for name in inactive:
-        print(f'Monitor {name!r} is not active; retaining the saved selection', file=sys.stderr)
-    if not screens:
-        raise ValueError('None of the selected monitors is active')
+    if screens:
+        available = monitors()
+        inactive = [name for name in screens if name not in available]
+        screens = [name for name in screens if name in available]
+        for name in inactive:
+            print(f'Monitor {name!r} is not active; retaining the saved selection', file=sys.stderr)
+        if not screens:
+            raise ValueError('None of the selected monitors is active')
     children = []
+    libc = ctypes.CDLL(None, use_errno=True)
+    relay = Relay(sys.stderr.fileno())
     def terminate(signum, frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
     try:
+        if not screens:
+            # Windowed and compatibility runs: no placement, same output relay.
+            child = subprocess.Popen([backend, *original], preexec_fn=lambda: renderer_lifetime(libc),
+                                     stderr=subprocess.PIPE)
+            children.append(child)
+            relay.attach(child.stderr)
+            code = child.wait()
+            raise SystemExit(128 - code if code < 0 else code)
         for name in dict.fromkeys(screens):
             geometry = available[name]
             environment = dict(os.environ, WE_POSITION_MONITOR=name,
                 WE_POSITION_FILE=str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "wallpaper-engine/positions.json"))
             child = subprocess.Popen(
                 [backend, '--window', 'x'.join(geometry), *args],
-                preexec_fn=renderer_lifetime, env=environment)
+                preexec_fn=lambda: renderer_lifetime(libc), env=environment,
+                stderr=subprocess.PIPE)
             children.append(child)
+            relay.attach(child.stderr)
             deadline = time.monotonic() + 60
             while True:
                 if child.poll() is not None:
@@ -169,6 +238,7 @@ def main():
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()
+        relay.drain()
 
 
 if __name__ == '__main__':

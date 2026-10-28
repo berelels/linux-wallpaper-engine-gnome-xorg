@@ -3,10 +3,21 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from integration_config import backend_path, read_config
+from integration_config import backend_path, open_log, read_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_helper_log_starts_over_only_past_its_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'helper.log'
+            for line in ('first\n', 'second\n'):
+                with open_log(path, limit=10) as log:
+                    log.write(line)
+            self.assertEqual(path.read_text(), 'first\nsecond\n')
+            with open_log(path, limit=10) as log:
+                log.write('third\n')
+            self.assertEqual(path.read_text(), 'third\n')
+
     def test_quoted_and_escaped_paths_without_execution(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'config.sh'

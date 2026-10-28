@@ -8,6 +8,16 @@ def config_home():
     return Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
 
 
+def open_log(path, limit=1 << 20):
+    """Append to a helper log, starting it over once it has passed LIMIT bytes."""
+    path = Path(path)
+    try:
+        mode = 'w' if path.stat().st_size > limit else 'a'
+    except FileNotFoundError:
+        mode = 'a'
+    return path.open(mode)
+
+
 def read_config(path=None):
     """Read plain KEY=VALUE assignments, including shell-quoted path names."""
     config = Path(path) if path else config_home() / 'wallpaper-engine/config.sh'

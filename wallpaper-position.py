@@ -32,7 +32,7 @@ def main():
     root = tk.Tk(); root.title('Wallpaper Position'); root.resizable(False, False)
     frame = ttk.Frame(root, padding=20); frame.grid()
     try:
-        output = subprocess.check_output(['xrandr', '--query'], text=True)
+        output = subprocess.check_output(['xrandr', '--current'], text=True)
         monitors = re.findall(r'^(\S+) connected (?:primary )?\d+x\d+[+-]\d+[+-]\d+', output, re.M)
     except (OSError, subprocess.SubprocessError) as exc:
         messagebox.showerror('Wallpaper Position', str(exc)); root.destroy(); return
