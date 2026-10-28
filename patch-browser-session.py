@@ -37,12 +37,17 @@ def patch_archive(path):
         source.seek(data_start + int(entry['offset']))
         package = json.loads(source.read(entry['size']))
     bootstrap = Path(__file__).with_name('session-main.cjs').read_bytes()
+    backup = path.with_name(path.name + '.before-persistent-session')
     if package.get('main') == 'session-main.cjs':
         with path.open('rb') as source:
             source.seek(data_start + int(files['session-main.cjs']['offset']))
-            if source.read(files['session-main.cjs']['size']) != bootstrap:
-                raise ValueError('Different session patch already installed; restore backup before upgrading')
-        return False
+            if source.read(files['session-main.cjs']['size']) == bootstrap:
+                return False
+        if not backup.exists():
+            raise ValueError('Different session patch already installed and no backup to upgrade from')
+        # An older version of this patch: start again from the original archive.
+        shutil.copy2(backup, path)
+        return patch_archive(path)
     if package.get('version') != '0.4.11' or package.get('main') != '.vite/build/main.js':
         raise ValueError('Supported browser is v0.4.11 with .vite/build/main.js; archive left unchanged')
     package['main'] = 'session-main.cjs'
@@ -56,7 +61,6 @@ def patch_archive(path):
     raw = json.dumps(header, separators=(',', ':')).encode()
     payload = struct.pack('<I', len(raw)) + raw + b'\0' * (-len(raw) % 4)
     encoded_header = struct.pack('<I', len(payload)) + payload
-    backup = path.with_name(path.name + '.before-persistent-session')
     if not backup.exists():
         shutil.copy2(path, backup)
     temporary = None

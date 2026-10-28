@@ -127,7 +127,7 @@ def integrate(dest):
     subprocess.run([str(python), str(APP / 'install-browser-integration.py'),
                     '--backend', str(dest / 'renderer/linux-wallpaperengine'),
                     '--browser', str(browser), '--python', str(python),
-                    '--tools-dir', str(dest / 'tools/bin')], check=True)
+                    '--tools-dir', str(dest / 'tools/bin'), '--update-check'], check=True)
 
 
 def running_helpers(base):
@@ -171,8 +171,11 @@ def install(base=None):
 
 def open_app(base=None, restore=False):
     base = Path(base or target())
-    if restore:
-        subprocess.Popen([str(base / 'run'), str(base / 'restore-browser-wallpapers.py')],
+    # The update check normally starts at login; start it now after an install
+    # or update (it exits at once when one is already running).
+    helpers = ['update-check.py'] + (['restore-browser-wallpapers.py'] if restore else [])
+    for script in helpers:
+        subprocess.Popen([str(base / 'run'), str(base / script)],
                          start_new_session=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.execv(str(base / 'run'), [str(base / 'run'), str(base / 'browser-launcher.py')])

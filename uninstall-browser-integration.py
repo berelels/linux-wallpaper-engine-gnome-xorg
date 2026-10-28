@@ -17,7 +17,7 @@ def helper_processes(target, proc_root=Path('/proc')):
                ('sync-overview-background.py', 'keep-desktop-icons.py',
                 'gnome-backend.py', 'restore-browser-wallpapers.py',
                 # The launcher stops the browser's process group when terminated.
-                'browser-launcher.py', 'wallpaper-position.py')}
+                'browser-launcher.py', 'wallpaper-position.py', 'update-check.py')}
     for proc in Path(proc_root).iterdir():
         if not proc.name.isdigit():
             continue
@@ -50,7 +50,8 @@ def main():
     autostart = config_home() / 'autostart'
     for name in ('wallpaper-overview-sync.desktop',
                  'wallpaper-icon-stacking.desktop',
-                 'wallpaper-browser-restore.desktop'):
+                 'wallpaper-browser-restore.desktop',
+                 'wallpaper-update-check.desktop'):
         (autostart / name).unlink(missing_ok=True)
     for name in ('linux-wallpaper-engine.desktop', 'wallpaper-position.desktop'):
         (data / 'applications' / name).unlink(missing_ok=True)

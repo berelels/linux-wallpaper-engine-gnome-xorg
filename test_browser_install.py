@@ -31,6 +31,8 @@ class BrowserIntegrationTests(unittest.TestCase):
             self.assertIn('Hidden=true',legacy.read_text())
             self.assertTrue(legacy.with_suffix('.desktop.before-browser-integration').exists())
             self.assertTrue((home/'.config/autostart/wallpaper-browser-restore.desktop').exists())
+            # run.sh installs update from git, not from releases.
+            self.assertFalse((home/'.config/autostart/wallpaper-update-check.desktop').exists())
             config=(home/'.config/wallpaper-engine/config.sh').read_text()
             self.assertIn(str(backend),config)
             self.assertNotIn(str(ROOT.parent),config)
@@ -43,8 +45,10 @@ class BrowserIntegrationTests(unittest.TestCase):
             python=home/'python3';python.symlink_to(sys.executable)
             env=dict(os.environ,HOME=temp,XDG_CONFIG_HOME=str(home/'.config'),XDG_DATA_HOME=str(home/'.local/share'),XDG_SESSION_TYPE='x11')
             subprocess.run([sys.executable,str(ROOT/'install-browser-integration.py'),'--backend',str(backend),'--browser',str(browser),
-                            '--python',str(python),'--tools-dir',str(tools),'--no-desktop-shortcut'],env=env,check=True,stdout=subprocess.PIPE,text=True)
+                            '--python',str(python),'--tools-dir',str(tools),'--no-desktop-shortcut','--update-check'],env=env,check=True,stdout=subprocess.PIPE,text=True)
             install=home/'.local/share/wallpaper-engine-gnome'
+            self.assertTrue((install/'update-check.py').is_file())
+            self.assertTrue((home/'.config/autostart/wallpaper-update-check.desktop').exists())
             run=(install/'run').read_text()
             self.assertIn(str(tools),run)
             self.assertIn(str(python.resolve()),run)

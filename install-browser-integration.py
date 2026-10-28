@@ -34,6 +34,8 @@ def main():
     parser.add_argument('--no-desktop-shortcut', action='store_true')
     parser.add_argument('--python', help='Python interpreter for the helpers (default: this one)')
     parser.add_argument('--tools-dir', help='Directory with bundled X11 tools, searched before PATH')
+    parser.add_argument('--update-check', action='store_true',
+                        help='check GitHub once a day for a newer AppImage release (AppImage installs)')
     args = parser.parse_args()
     python = Path(args.python).expanduser().resolve() if args.python else Path(sys.executable)
     tools = Path(args.tools_dir).expanduser().resolve() if args.tools_dir else None
@@ -62,7 +64,7 @@ def main():
              'capture_x11.py', 'integration_config.py', 'background_state.py',
              'sync-overview-background.py', 'keep-desktop-icons.py',
              'browser-launcher.py', 'restore-browser-wallpapers.py',
-             'uninstall-browser-integration.py']
+             'uninstall-browser-integration.py', 'update-check.py']
     for name in files:
         shutil.copy2(SOURCE / name, target / name)
     (target / 'uninstall-browser-integration.py').chmod(0o755)
@@ -106,7 +108,12 @@ def main():
                 subprocess.run(['gio', 'set', str(shortcut), 'metadata::trusted', 'true'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     autostart = config_home() / 'autostart'
     autostart.mkdir(parents=True, exist_ok=True)
-    for name, script in [('wallpaper-overview-sync', 'sync-overview-background.py'), ('wallpaper-icon-stacking', 'keep-desktop-icons.py'), ('wallpaper-browser-restore', 'restore-browser-wallpapers.py')]:
+    helpers = [('wallpaper-overview-sync', 'sync-overview-background.py'), ('wallpaper-icon-stacking', 'keep-desktop-icons.py'), ('wallpaper-browser-restore', 'restore-browser-wallpapers.py')]
+    if args.update_check:
+        helpers.append(('wallpaper-update-check', 'update-check.py'))
+    else:
+        (autostart / 'wallpaper-update-check.desktop').unlink(missing_ok=True)
+    for name, script in helpers:
         launch = quote_exec(run) + ' ' + quote_exec(target / script)
         (autostart / (name + '.desktop')).write_text(desktop_entry(name, launch, autostart=True))
     legacy = autostart / 'wallpaper-engine.desktop'

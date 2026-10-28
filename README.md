@@ -21,6 +21,8 @@ chmod +x Linux_Wallpaper_Engine-*-x86_64.AppImage
 
 On first run it asks to install for your user: it copies the app (about 1 GB) to `~/.local/share/wallpaper-engine-gnome` and adds it to your app menu and login. No sudo, no compiling. You can delete the AppImage afterwards; open it again to update or uninstall. `--check` checks your system without changing anything.
 
+**Updates:** once a day the installed app asks GitHub for the latest release and shows a notification when a newer one is out (set `UPDATE_CHECK=no` in `~/.config/wallpaper-engine/config.sh` to turn this off). The AppImage also carries its update information, so [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) and AppImageUpdate update it for you. After updating the AppImage, open it once to update the installed copy.
+
 Works with native or Flatpak Steam.
 
 ### Build from source instead
@@ -37,7 +39,7 @@ Sign into Steam, install Wallpaper Engine (enable Proton if Steam asks), then se
 
 ## What the installer does
 
-The AppImage installs steps 5 to 7 below for your user, with everything else already inside it (patched browser, renderer and its libraries, a private Python and the X11 tools). The renderer is built from the same pinned commit and patch.
+The AppImage installs steps 5 to 7 below for your user, with everything else already inside it (patched browser, renderer and its libraries, a private Python and the X11 tools), plus a fourth login helper, `wallpaper-update-check`, for the daily release check. The renderer is built from the same pinned commit and patch.
 
 `run.sh` runs as your normal user and asks for your sudo password once. It:
 
@@ -54,7 +56,7 @@ The AppImage installs steps 5 to 7 below for your user, with everything else alr
 
 **Your GNOME background:** while wallpapers play on every monitor, the overview helper sets the GNOME background to a generated still (`~/.local/share/backgrounds/wallpaper-engine/overview-*.png`). Your original background is saved first in `~/.config/wallpaper-engine/original-background.json` and restored when playback stops, when only some monitors have a wallpaper, and on uninstall.
 
-Nothing is sent anywhere. Network access is only used for `apt`, Flathub, the pinned browser download and the renderer source. Downloads, builds and logs are cached in `~/.cache/gnome-wallpaper-setup`. See [setup and troubleshooting](docs/SETUP.md) for every installed path.
+Nothing about your computer is sent anywhere. Network access is only used for `apt`, Flathub, the pinned browser download and the renderer source, and in AppImage installs for the daily read of this project's latest release on GitHub. Downloads, builds and logs are cached in `~/.cache/gnome-wallpaper-setup`. See [setup and troubleshooting](docs/SETUP.md) for every installed path.
 
 ## Everyday use
 

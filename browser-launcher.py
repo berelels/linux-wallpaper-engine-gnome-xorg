@@ -12,6 +12,12 @@ from integration_config import config_home, open_log, read_config
 HERE = Path(__file__).resolve().parent
 
 
+def exec_quote(value):
+    """Quote one argument for a desktop entry Exec line."""
+    value = str(value).replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
+    return '"' + value.replace('%', '%%') + '"'
+
+
 def main():
     config = read_config()
     browser = os.environ.get('LWE_BROWSER') or config.get('BROWSER') or shutil.which('linux-wallpaper-engine')
@@ -27,6 +33,12 @@ def main():
             subprocess.Popen([sys.executable, str(HERE / script)], stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
     environment = dict(os.environ)
     environment['PATH'] = str(HERE / 'bin') + os.pathsep + environment.get('PATH', '')
+    # Read by session-main.cjs in the patched browser: its "Launch on login"
+    # entry starts this launcher, not the bare browser without the adapter.
+    run = HERE / 'run'
+    launcher = [run] if run.is_file() else [Path(sys.executable)]
+    environment['LWE_LOGIN_EXEC'] = ' '.join(exec_quote(part) for part in [*launcher, Path(__file__).resolve()])
+    environment['LWE_ADAPTER_BIN'] = str(HERE / 'bin')
     # The patched Electron app owns the singleton, even while its window is hidden.
     # Separate process groups keep a secondary launch from stopping the first one.
     child = subprocess.Popen([browser, *sys.argv[1:]], env=environment,

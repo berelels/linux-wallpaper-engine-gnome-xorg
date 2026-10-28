@@ -31,6 +31,22 @@ class SessionPatchTests(unittest.TestCase):
             self.assertFalse(patcher.patch_archive(path))
             self.assertEqual(content, path.read_bytes())
 
+    def test_older_session_patch_is_replaced_from_the_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.archive(directory); original = path.read_bytes()
+            older = Path(directory)/'older'; older.mkdir()
+            (older/'patch-browser-session.py').write_bytes(Path(patcher.__file__).read_bytes())
+            (older/'session-main.cjs').write_text("require('./.vite/build/main.js');\n")
+            spec = importlib.util.spec_from_file_location('older_patch', older/'patch-browser-session.py')
+            old_patcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(old_patcher)
+            self.assertTrue(old_patcher.patch_archive(path))
+            self.assertTrue(patcher.patch_archive(path))
+            header, offset = patcher.read_archive(path); content = path.read_bytes()
+            entry = header['files']['session-main.cjs']; start = offset + int(entry['offset'])
+            self.assertEqual(content[start:start+entry['size']], Path(patcher.__file__).with_name('session-main.cjs').read_bytes())
+            self.assertEqual(path.with_name('app.asar.before-persistent-session').read_bytes(), original)
+            self.assertFalse(patcher.patch_archive(path))
+
     def test_rejects_unsupported_version_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.archive(directory, '999'); original = path.read_bytes()

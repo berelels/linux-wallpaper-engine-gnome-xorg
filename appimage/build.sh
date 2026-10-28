@@ -10,7 +10,7 @@ APPDIR=$ROOT/build/AppDir
 LWE=$APPDIR/usr/lib/lwe
 DIST=$ROOT/dist
 OUTPUT=$DIST/Linux_Wallpaper_Engine-$APP_VERSION-x86_64.AppImage
-PACKAGES=(build-essential cmake git curl ca-certificates unzip pkg-config patchelf binutils
+PACKAGES=(build-essential cmake git curl ca-certificates unzip pkg-config patchelf binutils zsync
     wmctrl x11-utils xdotool
     libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev libglew-dev
     freeglut3-dev libsdl2-dev liblz4-dev libavcodec-dev libavformat-dev libavutil-dev
@@ -119,5 +119,11 @@ done
 env -i PATH=/usr/bin:/bin "$LWE/renderer/linux-wallpaperengine" --help >/dev/null
 
 echo '== AppImage'
-ARCH=x86_64 "$CACHE/appimagetool" --appimage-extract-and-run --no-appstream "$APPDIR" "$OUTPUT"
-ls -lh "$OUTPUT"
+rm -f "$OUTPUT" "$OUTPUT.zsync"
+# With update information appimagetool also writes $OUTPUT.zsync (needs zsyncmake).
+(cd "$DIST" && ARCH=x86_64 "$CACHE/appimagetool" --appimage-extract-and-run --no-appstream \
+    --updateinformation "$UPDATE_INFO" "$APPDIR" "$OUTPUT")
+[[ -s $OUTPUT.zsync ]] || { echo "appimagetool did not write $OUTPUT.zsync" >&2; exit 1; }
+[[ $("$OUTPUT" --appimage-updateinformation) == "$UPDATE_INFO" ]] || { echo 'Update information missing' >&2; exit 1; }
+(cd "$DIST" && sha256sum "${OUTPUT##*/}" > "${OUTPUT##*/}.sha256")
+ls -lh "$OUTPUT" "$OUTPUT.zsync" "$OUTPUT.sha256"
