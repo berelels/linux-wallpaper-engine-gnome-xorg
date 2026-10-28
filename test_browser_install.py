@@ -35,6 +35,28 @@ class BrowserIntegrationTests(unittest.TestCase):
             self.assertIn(str(backend),config)
             self.assertNotIn(str(ROOT.parent),config)
 
+    def test_bundled_python_and_tools_are_used_by_every_entry(self):
+        with tempfile.TemporaryDirectory(prefix='wallpaper home ') as temp:
+            home=Path(temp);tools=home/'bundled tools';tools.mkdir()
+            backend=home/'renderer';backend.write_text('#!/bin/sh\n');backend.chmod(0o755)
+            browser=home/'browser';browser.write_text('#!/bin/sh\n');browser.chmod(0o755)
+            python=home/'python3';python.symlink_to(sys.executable)
+            env=dict(os.environ,HOME=temp,XDG_CONFIG_HOME=str(home/'.config'),XDG_DATA_HOME=str(home/'.local/share'),XDG_SESSION_TYPE='x11')
+            subprocess.run([sys.executable,str(ROOT/'install-browser-integration.py'),'--backend',str(backend),'--browser',str(browser),
+                            '--python',str(python),'--tools-dir',str(tools),'--no-desktop-shortcut'],env=env,check=True,stdout=subprocess.PIPE,text=True)
+            install=home/'.local/share/wallpaper-engine-gnome'
+            run=(install/'run').read_text()
+            self.assertIn(str(tools),run)
+            self.assertIn(str(python.resolve()),run)
+            for entry in [home/'.local/share/applications/linux-wallpaper-engine.desktop',
+                          *sorted((home/'.config/autostart').glob('wallpaper-*.desktop'))]:
+                self.assertIn(str(install/'run'),entry.read_text())
+            self.assertIn(str(install/'run'),(install/'bin/linux-wallpaperengine').read_text())
+            # The wrapper really runs the chosen interpreter with the bundled tools first on PATH.
+            out=subprocess.run([str(install/'run'),'-c','import os,sys;print(os.environ["PATH"].split(":")[0])'],
+                               check=True,stdout=subprocess.PIPE,text=True).stdout.strip()
+            self.assertEqual(out,str(tools))
+
     def test_restore_preserves_background_path_and_monitor_settings(self):
         with tempfile.TemporaryDirectory() as temp:
             bg=Path(temp)/'wallpaper with spaces';bg.mkdir()

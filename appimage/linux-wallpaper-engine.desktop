@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Wallpaper Engine
+Comment=Install, update or open animated wallpapers for GNOME on X11
+Exec=AppRun
+Icon=linux-wallpaper-engine
+Terminal=false
+Categories=Utility;

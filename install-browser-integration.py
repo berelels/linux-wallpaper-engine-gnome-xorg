@@ -32,16 +32,20 @@ def main():
     parser.add_argument('--backend', help='Path to the real compiled renderer')
     parser.add_argument('--browser', help='Path to the separately installed native full browser')
     parser.add_argument('--no-desktop-shortcut', action='store_true')
+    parser.add_argument('--python', help='Python interpreter for the helpers (default: this one)')
+    parser.add_argument('--tools-dir', help='Directory with bundled X11 tools, searched before PATH')
     args = parser.parse_args()
+    python = Path(args.python).expanduser().resolve() if args.python else Path(sys.executable)
+    tools = Path(args.tools_dir).expanduser().resolve() if args.tools_dir else None
+    search = os.pathsep.join(([str(tools)] if tools else []) + [os.environ.get('PATH', '')])
     if os.geteuid() == 0:
         parser.error('Run as your desktop user, without sudo')
     if os.environ.get('XDG_SESSION_TYPE') != 'x11':
         parser.error('This integration requires a GNOME X11 desktop session')
     for command in ('xrandr', 'xprop', 'wmctrl', 'stdbuf', 'gsettings'):
-        if not shutil.which(command): parser.error('Missing dependency: ' + command)
-    try:
-        import PIL
-    except ImportError:
+        if not shutil.which(command, path=search): parser.error('Missing dependency: ' + command)
+    if subprocess.run([str(python), '-c', 'import PIL'], stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL).returncode != 0:
         parser.error('Install python3-pil before running this installer')
     renderer = backend_path(args.backend)
     if not renderer.is_file() or not os.access(renderer, os.X_OK):
@@ -62,17 +66,28 @@ def main():
     for name in files:
         shutil.copy2(SOURCE / name, target / name)
     (target / 'uninstall-browser-integration.py').chmod(0o755)
+    # Every entry point runs through one wrapper, so the chosen Python and
+    # bundled tools are used at login, from the menu and by the browser.
+    path_line = ('PATH=' + shlex.quote(str(tools)) + ':"$PATH"; export PATH\n') if tools else ''
+    if args.python:
+        path_line = 'unset PYTHONHOME PYTHONPATH\n' + path_line  # bundled interpreter only
+    run = target / 'run'
+    run.write_text('#!/bin/sh\n' + path_line + 'exec ' + shlex.quote(str(python)) + ' "$@"\n')
+    run.chmod(0o755)
     (target / 'bin').mkdir(exist_ok=True)
-    shutil.copy2(SOURCE / 'browser-bin/linux-wallpaperengine', target / 'bin/linux-wallpaperengine')
-    (target / 'bin/linux-wallpaperengine').chmod(0o755)
+    shutil.copy2(SOURCE / 'browser-bin/linux-wallpaperengine', target / 'bin/linux-wallpaperengine.py')
+    backend = target / 'bin/linux-wallpaperengine'
+    backend.write_text('#!/bin/sh\nexec ' + shlex.quote(str(run)) + ' '
+                       + shlex.quote(str(target / 'bin/linux-wallpaperengine.py')) + ' "$@"\n')
+    backend.chmod(0o755)
     config.update(BINARY=str(renderer), BROWSER=str(browser))
     config_path = config_home() / 'wallpaper-engine/config.sh'
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if config_path.exists():
         shutil.copy2(config_path, config_path.with_suffix('.sh.before-browser-integration'))
     config_path.write_text(''.join(key + '=' + shlex.quote(value) + '\n' for key, value in config.items()))
-    command = quote_exec(sys.executable) + ' ' + quote_exec(target / 'browser-launcher.py')
-    position_command = quote_exec(sys.executable) + ' ' + quote_exec(target / 'wallpaper-position.py')
+    command = quote_exec(run) + ' ' + quote_exec(target / 'browser-launcher.py')
+    position_command = quote_exec(run) + ' ' + quote_exec(target / 'wallpaper-position.py')
     entry = desktop_entry('Linux Wallpaper Engine', command)
     entry += 'Actions=Position;\n\n[Desktop Action Position]\nName=Adjust wallpaper position\nExec=' + position_command + '\n'
     applications = data / 'applications'
@@ -92,7 +107,7 @@ def main():
     autostart = config_home() / 'autostart'
     autostart.mkdir(parents=True, exist_ok=True)
     for name, script in [('wallpaper-overview-sync', 'sync-overview-background.py'), ('wallpaper-icon-stacking', 'keep-desktop-icons.py'), ('wallpaper-browser-restore', 'restore-browser-wallpapers.py')]:
-        launch = quote_exec(sys.executable) + ' ' + quote_exec(target / script)
+        launch = quote_exec(run) + ' ' + quote_exec(target / script)
         (autostart / (name + '.desktop')).write_text(desktop_entry(name, launch, autostart=True))
     legacy = autostart / 'wallpaper-engine.desktop'
     if legacy.exists() and 'start-wallpaper.sh' in legacy.read_text():

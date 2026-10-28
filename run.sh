@@ -2,9 +2,8 @@
 # Complete supported-platform setup. Run as your normal desktop user.
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-BACKEND_REV=b016d7d1fdcf4e5fd2f9c9fa420a8aaa07fee02d
-BROWSER_VERSION=0.4.11
-BROWSER_SHA=4fd1ef71f5317fca521bff67173b020624cab8fadc0cb1bd685c41d8100fd97f
+# shellcheck source=appimage/versions.env
+source "$ROOT/appimage/versions.env"
 if [[ ${1:-} == --help ]]; then
     cat <<'EOF'
 Usage: ./run.sh [--check]

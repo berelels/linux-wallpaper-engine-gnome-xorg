@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the bundled Python only; the app itself is installed per user on first run.
+HERE=$(dirname "$(readlink -f "$0")")
+unset PYTHONHOME PYTHONPATH
+exec "$HERE/usr/lib/lwe/python/bin/python3" "$HERE/usr/lib/lwe/app/appimage/appimage-entry.py" "$@"

@@ -15,7 +15,9 @@ from integration_config import config_home
 def helper_processes(target, proc_root=Path('/proc')):
     scripts = {str(target / name) for name in
                ('sync-overview-background.py', 'keep-desktop-icons.py',
-                'gnome-backend.py', 'restore-browser-wallpapers.py')}
+                'gnome-backend.py', 'restore-browser-wallpapers.py',
+                # The launcher stops the browser's process group when terminated.
+                'browser-launcher.py', 'wallpaper-position.py')}
     for proc in Path(proc_root).iterdir():
         if not proc.name.isdigit():
             continue

@@ -1,5 +1,4 @@
 """Connect the downloaded native browser to the GNOME integration."""
-import json
 import os
 from pathlib import Path
 import shlex
@@ -12,17 +11,12 @@ config = Path(os.environ.get('XDG_CONFIG_HOME', home / '.config'))
 data = Path(os.environ.get('XDG_DATA_HOME', home / '.local/share'))
 steam_home = home / '.var/app/com.valvesoftware.Steam'
 subprocess.run([sys.executable, str(repo / 'patch-browser-session.py'), str(browser / 'resources/app.asar')], check=True)
-# Keep the host XDG profile, while allowing Steamworks to locate Flatpak Steam.
-launch = app / 'native-browser'
-launch.write_text('#!/bin/sh\n' + '\n'.join('export ' + key + '=' + shlex.quote(str(value)) for key, value in {
-    'HOME': steam_home, 'XDG_CONFIG_HOME': config, 'XDG_DATA_HOME': data}.items()) +
-    '\nexec ' + shlex.quote(str(browser / 'linux-wallpaper-engine')) + ' "$@"\n')
-launch.chmod(0o755)
-settings = config / 'Linux Wallpaper Engine/settings.json'
-settings.parent.mkdir(parents=True, exist_ok=True)
-values = json.loads(settings.read_text()) if settings.exists() else {}
-values.update(enableSystemTray=True, minimizeOnClose=True, minimizeOnStartup=False)
-settings.write_text(json.dumps(values, indent=2))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_wrapper import update_browser_settings, write_browser_wrapper
+# run.sh installs Flatpak Steam, so Steamworks needs the Flatpak HOME.
+launch = write_browser_wrapper(app / 'native-browser', browser / 'linux-wallpaper-engine', 'flatpak',
+                               home=home, config=config, data=data)
+update_browser_settings(config)
 subprocess.run([sys.executable, str(repo / 'install-browser-integration.py'),
     '--backend', str(player / 'linux-wallpaperengine'), '--browser', str(launch)], check=True)
 # Existing suite launchers now reach the same native app/profile.
